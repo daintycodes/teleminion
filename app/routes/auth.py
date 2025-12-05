@@ -47,7 +47,12 @@ async def send_code(request: Request):
     try:
         # Check if already authorized
         if await client.is_user_authorized():
-            return {"success": True, "message": "Already authenticated"}
+            return HTMLResponse("""
+                <div class="p-4 bg-green-500/20 border border-green-500/50 rounded-lg text-green-400">
+                    <p class="font-semibold">✓ Already authenticated!</p>
+                    <script>setTimeout(() => location.reload(), 2000);</script>
+                </div>
+            """)
         
         # Send code request
         result = await client.send_code_request(settings.TELEGRAM_PHONE)
@@ -60,14 +65,48 @@ async def send_code(request: Request):
         
         logger.info("Verification code sent")
         
-        return {
-            "success": True,
-            "message": "Verification code sent to your Telegram"
-        }
+        # Return HTML form for entering the code
+        return HTMLResponse("""
+            <div class="space-y-4">
+                <div class="p-4 bg-blue-500/20 border border-blue-500/50 rounded-lg text-blue-400">
+                    <p class="font-semibold">📱 Verification code sent!</p>
+                    <p class="text-sm mt-1">Check your Telegram app for the code.</p>
+                </div>
+                <form hx-post="/auth/verify" 
+                      hx-target="#auth-container"
+                      hx-swap="innerHTML"
+                      class="flex gap-3 items-center">
+                    <input type="text" 
+                           name="code" 
+                           placeholder="Enter verification code"
+                           class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500 w-48 text-white"
+                           autofocus
+                           autocomplete="off"
+                           pattern="[0-9]*"
+                           inputmode="numeric">
+                    <button type="submit" 
+                            class="px-6 py-2 rounded-lg font-medium text-white"
+                            style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                        Verify
+                    </button>
+                </form>
+            </div>
+        """)
         
     except Exception as e:
         logger.error(f"Failed to send code: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return HTMLResponse(f"""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p class="font-semibold">❌ Failed to send code</p>
+                <p class="text-sm mt-1">{str(e)}</p>
+                <button hx-post="/auth/send-code"
+                        hx-target="#auth-container"
+                        hx-swap="innerHTML"
+                        class="mt-3 px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-sm">
+                    Try Again
+                </button>
+            </div>
+        """)
 
 
 @router.post("/verify")
@@ -80,14 +119,38 @@ async def verify_code(request: Request):
     code = form.get("code", "").strip()
     
     if not code:
-        raise HTTPException(status_code=400, detail="Verification code required")
+        return HTMLResponse("""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p>Please enter the verification code.</p>
+                <form hx-post="/auth/verify" 
+                      hx-target="#auth-container"
+                      hx-swap="innerHTML"
+                      class="flex gap-3 items-center mt-3">
+                    <input type="text" name="code" placeholder="Enter code"
+                           class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500 w-48 text-white"
+                           autofocus autocomplete="off">
+                    <button type="submit" 
+                            class="px-6 py-2 rounded-lg font-medium text-white"
+                            style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                        Verify
+                    </button>
+                </form>
+            </div>
+        """)
     
     phone_code_hash = auth_state.get('phone_code_hash')
     if not phone_code_hash:
-        raise HTTPException(
-            status_code=400, 
-            detail="No pending verification. Please request a new code."
-        )
+        return HTMLResponse("""
+            <div class="p-4 bg-amber-500/20 border border-amber-500/50 rounded-lg text-amber-400">
+                <p>Session expired. Please request a new code.</p>
+                <button hx-post="/auth/send-code"
+                        hx-target="#auth-container"
+                        hx-swap="innerHTML"
+                        class="mt-3 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm">
+                    Send New Code
+                </button>
+            </div>
+        """)
     
     try:
         # Sign in with the code
@@ -107,6 +170,10 @@ async def verify_code(request: Request):
         if hasattr(client.session, 'save_session'):
             await client.session.save_session()
         
+        # Start background tasks if not already running
+        if hasattr(request.app.state, 'start_background_tasks'):
+            await request.app.state.start_background_tasks()
+        
         logger.info("Telegram authentication successful")
         
         return HTMLResponse("""
@@ -118,11 +185,40 @@ async def verify_code(request: Request):
         """)
         
     except PhoneCodeInvalidError:
-        raise HTTPException(status_code=400, detail="Invalid verification code")
+        return HTMLResponse("""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p class="font-semibold">❌ Invalid code</p>
+                <p class="text-sm mt-1">Please check and try again.</p>
+                <form hx-post="/auth/verify" 
+                      hx-target="#auth-container"
+                      hx-swap="innerHTML"
+                      class="flex gap-3 items-center mt-3">
+                    <input type="text" name="code" placeholder="Enter code"
+                           class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500 w-48 text-white"
+                           autofocus autocomplete="off">
+                    <button type="submit" 
+                            class="px-6 py-2 rounded-lg font-medium text-white"
+                            style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                        Verify
+                    </button>
+                </form>
+            </div>
+        """)
         
     except PhoneCodeExpiredError:
         request.app.state.auth_status = {'awaiting_code': False}
-        raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
+        return HTMLResponse("""
+            <div class="p-4 bg-amber-500/20 border border-amber-500/50 rounded-lg text-amber-400">
+                <p class="font-semibold">⏰ Code expired</p>
+                <p class="text-sm mt-1">Please request a new verification code.</p>
+                <button hx-post="/auth/send-code"
+                        hx-target="#auth-container"
+                        hx-swap="innerHTML"
+                        class="mt-3 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm">
+                    Send New Code
+                </button>
+            </div>
+        """)
         
     except SessionPasswordNeededError:
         # 2FA is enabled
@@ -130,14 +226,44 @@ async def verify_code(request: Request):
             'awaiting_code': False,
             'awaiting_2fa': True
         }
-        raise HTTPException(
-            status_code=400, 
-            detail="Two-factor authentication required. Please use the password endpoint."
-        )
+        return HTMLResponse("""
+            <div class="space-y-4">
+                <div class="p-4 bg-amber-500/20 border border-amber-500/50 rounded-lg text-amber-400">
+                    <p class="font-semibold">🔐 Two-Factor Authentication Required</p>
+                    <p class="text-sm mt-1">Please enter your 2FA password.</p>
+                </div>
+                <form hx-post="/auth/2fa"
+                      hx-target="#auth-container"
+                      hx-swap="innerHTML"
+                      class="flex gap-3 items-center">
+                    <input type="password"
+                           name="password"
+                           placeholder="Enter 2FA password"
+                           class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500 w-48 text-white"
+                           autofocus>
+                    <button type="submit" 
+                            class="px-6 py-2 rounded-lg font-medium text-white"
+                            style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                        Submit
+                    </button>
+                </form>
+            </div>
+        """)
         
     except Exception as e:
         logger.error(f"Verification failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return HTMLResponse(f"""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p class="font-semibold">❌ Verification failed</p>
+                <p class="text-sm mt-1">{str(e)}</p>
+                <button hx-post="/auth/send-code"
+                        hx-target="#auth-container"
+                        hx-swap="innerHTML"
+                        class="mt-3 px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-sm">
+                    Try Again
+                </button>
+            </div>
+        """)
 
 
 @router.post("/2fa")
@@ -149,7 +275,24 @@ async def verify_2fa(request: Request):
     password = form.get("password", "").strip()
     
     if not password:
-        raise HTTPException(status_code=400, detail="2FA password required")
+        return HTMLResponse("""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p>Please enter your 2FA password.</p>
+                <form hx-post="/auth/2fa"
+                      hx-target="#auth-container"
+                      hx-swap="innerHTML"
+                      class="flex gap-3 items-center mt-3">
+                    <input type="password" name="password" placeholder="2FA password"
+                           class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500 w-48 text-white"
+                           autofocus>
+                    <button type="submit" 
+                            class="px-6 py-2 rounded-lg font-medium text-white"
+                            style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                        Submit
+                    </button>
+                </form>
+            </div>
+        """)
     
     try:
         await client.sign_in(password=password)
@@ -163,15 +306,37 @@ async def verify_2fa(request: Request):
         if hasattr(client.session, 'save_session'):
             await client.session.save_session()
         
+        if hasattr(request.app.state, 'start_background_tasks'):
+            await request.app.state.start_background_tasks()
+        
         logger.info("2FA authentication successful")
         
         return HTMLResponse("""
             <div class="p-4 bg-green-500/20 border border-green-500/50 rounded-lg text-green-400">
                 <p class="font-semibold">✓ Authentication successful!</p>
+                <p class="text-sm mt-1">You can now add channels and start scanning.</p>
                 <script>setTimeout(() => location.reload(), 2000);</script>
             </div>
         """)
         
     except Exception as e:
         logger.error(f"2FA verification failed: {e}")
-        raise HTTPException(status_code=400, detail="Invalid 2FA password")
+        return HTMLResponse(f"""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p class="font-semibold">❌ Invalid 2FA password</p>
+                <p class="text-sm mt-1">{str(e)}</p>
+                <form hx-post="/auth/2fa"
+                      hx-target="#auth-container"
+                      hx-swap="innerHTML"
+                      class="flex gap-3 items-center mt-3">
+                    <input type="password" name="password" placeholder="2FA password"
+                           class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500 w-48 text-white"
+                           autofocus>
+                    <button type="submit" 
+                            class="px-6 py-2 rounded-lg font-medium text-white"
+                            style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                        Try Again
+                    </button>
+                </form>
+            </div>
+        """)
