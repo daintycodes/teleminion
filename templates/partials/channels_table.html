@@ -1,0 +1,52 @@
+<!-- Channels Table -->
+<table class="w-full">
+    <thead class="bg-dark-700 text-gray-400 text-sm">
+        <tr>
+            <th class="px-4 py-3 text-left">Name</th>
+            <th class="px-4 py-3 text-left">Username</th>
+            <th class="px-4 py-3 text-left">ID</th>
+            <th class="px-4 py-3 text-left">Status</th>
+            <th class="px-4 py-3 text-left">Actions</th>
+        </tr>
+    </thead>
+    <tbody id="channels-tbody" class="divide-y divide-gray-800">
+        {% for channel in channels %}
+        <tr id="channel-{{ channel.id }}">
+            <td class="px-4 py-3 text-gray-200">{{ channel.name or 'Unknown' }}</td>
+            <td class="px-4 py-3 text-gray-400">@{{ channel.username or 'N/A' }}</td>
+            <td class="px-4 py-3 text-gray-400 font-mono text-sm">{{ channel.id }}</td>
+            <td class="px-4 py-3">
+                {% if channel.is_active %}
+                <span class="px-2 py-1 rounded-full text-xs bg-green-500/20 text-green-400">Active</span>
+                {% else %}
+                <span class="px-2 py-1 rounded-full text-xs bg-gray-500/20 text-gray-400">Inactive</span>
+                {% endif %}
+            </td>
+            <td class="px-4 py-3">
+                <button hx-post="/channels/{{ channel.id }}/scan" hx-swap="none"
+                    class="text-blue-400 hover:text-blue-300 mr-3 text-sm">
+                    Scan Now
+                </button>
+                <button hx-delete="/channels/{{ channel.id }}" hx-target="#channel-{{ channel.id }}" hx-swap="outerHTML"
+                    hx-confirm="Remove this channel?" class="text-red-400 hover:text-red-300 text-sm">
+                    Remove
+                </button>
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="5" class="px-4 py-12 text-center">
+                <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-800 flex items-center justify-center">
+                    <svg class="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0">
+                        </path>
+                    </svg>
+                </div>
+                <p class="text-gray-500">No channels added</p>
+                <p class="text-sm text-gray-600 mt-1">Add a channel using the form above</p>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>

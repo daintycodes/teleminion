@@ -1,0 +1,104 @@
+version: "3.8"
+
+services:
+  # ==========================================================================
+  # TeleMinion Application
+  # ==========================================================================
+  app:
+    build: .
+    container_name: teleminio-app
+    ports:
+      - "8000:8000"
+    environment:
+      # Database
+      - DATABASE_URL=postgresql://teleminio:teleminio@postgres:5432/teleminio
+      
+      # Telegram API (get from https://my.telegram.org)
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_PHONE=${TELEGRAM_PHONE}
+      - TELEGRAM_SESSION_NAME=teleminio
+      
+      # MinIO
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=false
+      
+      # App settings
+      - DOWNLOAD_PATH=/tmp/downloads
+      - SCAN_INTERVAL=60
+      - LOG_LEVEL=INFO
+    volumes:
+      - downloads_temp:/tmp/downloads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - teleminio-network
+
+  # ==========================================================================
+  # PostgreSQL Database
+  # ==========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: teleminio-postgres
+    environment:
+      POSTGRES_USER: teleminio
+      POSTGRES_PASSWORD: teleminio
+      POSTGRES_DB: teleminio
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teleminio -d teleminio"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - teleminio-network
+
+  # ==========================================================================
+  # MinIO Object Storage
+  # ==========================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: teleminio-minio
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - teleminio-network
+
+# ==========================================================================
+# Volumes
+# ==========================================================================
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local
+  downloads_temp:
+    driver: local
+
+# ==========================================================================
+# Networks
+# ==========================================================================
+networks:
+  teleminio-network:
+    driver: bridge

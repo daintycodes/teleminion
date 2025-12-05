@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="min-h-screen">
+    <!-- Header -->
+    <header class="glass-card border-b border-gray-800 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div
+                    class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h1
+                        class="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
+                        TeleMinion
+                    </h1>
+                    <p class="text-xs text-gray-500">Telegram → MinIO Automation</p>
+                </div>
+            </div>
+
+            <!-- Connection Status -->
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2 text-sm">
+                    <span
+                        class="w-2 h-2 rounded-full {% if telegram_connected %}bg-green-400{% else %}bg-red-400{% endif %}"></span>
+                    <span class="text-gray-400">Telegram</span>
+                </div>
+                <a href="/health" class="text-gray-500 hover:text-gray-300 text-sm">
+                    Health
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+
+        <!-- Auth Section (if not authenticated) -->
+        {% if not telegram_connected %}
+        <div class="glass-card rounded-2xl p-6 mb-8 border border-amber-500/30">
+            <h2 class="text-lg font-semibold text-amber-400 mb-4">
+                🔐 Telegram Authentication Required
+            </h2>
+
+            <div id="auth-container">
+                {% if auth_status.get('awaiting_code') %}
+                <!-- Code input form -->
+                <form hx-post="/auth/verify" hx-target="#auth-container" hx-swap="innerHTML"
+                    class="flex gap-3 items-center">
+                    <input type="text" name="code" placeholder="Enter verification code"
+                        class="px-4 py-2 bg-dark-700 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500 w-48"
+                        autofocus>
+                    <button type="submit" class="btn-primary px-4 py-2 rounded-lg font-medium">
+                        Verify
+                    </button>
+                </form>
+                <p class="text-sm text-gray-400 mt-2">Check your Telegram app for the verification code.</p>
+
+                {% elif auth_status.get('awaiting_2fa') %}
+                <!-- 2FA password form -->
+                <form hx-post="/auth/2fa" hx-target="#auth-container" hx-swap="innerHTML"
+                    class="flex gap-3 items-center">
+                    <input type="password" name="password" placeholder="Enter 2FA password"
+                        class="px-4 py-2 bg-dark-700 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500 w-48">
+                    <button type="submit" class="btn-primary px-4 py-2 rounded-lg font-medium">
+                        Submit
+                    </button>
+                </form>
+
+                {% else %}
+                <!-- Send code button -->
+                <button hx-post="/auth/send-code" hx-target="#auth-container" hx-swap="innerHTML"
+                    class="btn-primary px-6 py-2 rounded-lg font-medium">
+                    Send Verification Code
+                </button>
+                <p class="text-sm text-gray-400 mt-2">
+                    A code will be sent to your Telegram account.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Stats Cards -->
+        <div id="stats-cards" hx-get="/stats" hx-trigger="every 10s" hx-swap="innerHTML">
+            {% include "partials/stats_cards.html" %}
+        </div>
+
+        <!-- Tab Navigation -->
+        <div class="flex gap-2 mb-6 mt-8">
+            <button onclick="showTab('pending')" id="tab-pending"
+                class="px-4 py-2 rounded-lg border border-gray-700 text-sm font-medium transition-all tab-active">
+                📥 Pending
+                <span class="ml-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs">
+                    {{ stats.pending_files }}
+                </span>
+            </button>
+            <button onclick="showTab('active')" id="tab-active"
+                class="px-4 py-2 rounded-lg border border-gray-700 text-sm font-medium transition-all hover:border-gray-600">
+                ⚡ Active
+                <span class="ml-1 px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 text-xs">
+                    {{ stats.active_files }}
+                </span>
+            </button>
+            <button onclick="showTab('history')" id="tab-history"
+                class="px-4 py-2 rounded-lg border border-gray-700 text-sm font-medium transition-all hover:border-gray-600">
+                📚 History
+                <span class="ml-1 px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 text-xs">
+                    {{ stats.completed_files }}
+                </span>
+            </button>
+            <button onclick="showTab('channels')" id="tab-channels"
+                class="px-4 py-2 rounded-lg border border-gray-700 text-sm font-medium transition-all hover:border-gray-600">
+                📡 Channels
+                <span class="ml-1 px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 text-xs">
+                    {{ stats.active_channels }}
+                </span>
+            </button>
+        </div>
+
+        <!-- Tab Content -->
+        <div class="glass-card rounded-2xl overflow-hidden">
+            <!-- Pending Tab -->
+            <div id="content-pending" hx-get="/pending" hx-trigger="load, every 30s" hx-swap="innerHTML">
+                <div class="p-8 text-center text-gray-500">
+                    <div class="htmx-indicator">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Active Tab -->
+            <div id="content-active" class="hidden" hx-get="/active" hx-trigger="revealed, every 3s"
+                hx-swap="innerHTML">
+            </div>
+
+            <!-- History Tab -->
+            <div id="content-history" class="hidden" hx-get="/history" hx-trigger="revealed" hx-swap="innerHTML">
+            </div>
+
+            <!-- Channels Tab -->
+            <div id="content-channels" class="hidden">
+                <!-- Add Channel Form -->
+                <div class="p-4 border-b border-gray-800">
+                    <form hx-post="/channels" hx-target="#channels-tbody" hx-swap="afterbegin"
+                        hx-on::after-request="this.reset()" class="flex gap-3">
+                        <input type="text" name="identifier" placeholder="Channel username, invite link, or ID"
+                            class="flex-1 px-4 py-2 bg-dark-700 border border-gray-700 rounded-lg focus:outline-none focus:border-indigo-500">
+                        <button type="submit" class="btn-primary px-6 py-2 rounded-lg font-medium">
+                            Add Channel
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Channels Table -->
+                <div hx-get="/channels/list" hx-trigger="load" hx-swap="innerHTML">
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="max-w-7xl mx-auto px-4 py-8 text-center text-gray-600 text-sm">
+        <p>TeleMinion v1.0.0 • Telegram to MinIO Automation</p>
+    </footer>
+</div>
+
+<script>
+    function showTab(tabName) {
+        // Hide all content
+        document.querySelectorAll('[id^="content-"]').forEach(el => {
+            el.classList.add('hidden');
+        });
+
+        // Remove active from all tabs
+        document.querySelectorAll('[id^="tab-"]').forEach(el => {
+            el.classList.remove('tab-active');
+        });
+
+        // Show selected content
+        document.getElementById('content-' + tabName).classList.remove('hidden');
+
+        // Activate tab
+        document.getElementById('tab-' + tabName).classList.add('tab-active');
+
+        // Trigger HTMX load if needed
+        htmx.trigger('#content-' + tabName, 'revealed');
+    }
+</script>
+{% endblock %}

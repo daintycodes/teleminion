@@ -1,0 +1,94 @@
+<!-- Active Downloads Table -->
+<div class="p-4 border-b border-gray-800">
+    <h3 class="font-semibold text-gray-200">Active Downloads</h3>
+    <p class="text-sm text-gray-500">Files currently being processed</p>
+</div>
+
+{% if files %}
+<div class="overflow-x-auto">
+    <table class="w-full">
+        <thead class="bg-dark-700 text-gray-400 text-sm">
+            <tr>
+                <th class="px-4 py-3 text-left w-10">#</th>
+                <th class="px-4 py-3 text-left">File</th>
+                <th class="px-4 py-3 text-left">Size</th>
+                <th class="px-4 py-3 text-left">Type</th>
+                <th class="px-4 py-3 text-left">Status</th>
+                <th class="px-4 py-3 text-left">Progress</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+            {% for file in files %}
+            <tr id="file-{{ file.id }}" hx-get="/files/{{ file.id }}/status" hx-trigger="every 2s" hx-swap="outerHTML">
+                <td class="px-4 py-3 text-gray-500 text-sm">{{ file.id }}</td>
+                <td class="px-4 py-3">
+                    <div class="flex items-center gap-3">
+                        {% if file.file_type == 'audio' %}
+                        <div class="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                            <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3">
+                                </path>
+                            </svg>
+                        </div>
+                        {% else %}
+                        <div class="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center">
+                            <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z">
+                                </path>
+                            </svg>
+                        </div>
+                        {% endif %}
+                        <div class="min-w-0">
+                            <p class="text-gray-200 truncate max-w-xs">{{ file.file_name or 'Unknown' }}</p>
+                            <p class="text-xs text-gray-500">{{ file.channel_name or file.channel_id }}</p>
+                        </div>
+                    </div>
+                </td>
+                <td class="px-4 py-3 text-gray-400 text-sm">
+                    {{ format_size(file.file_size) if file.file_size else 'Unknown' }}
+                </td>
+                <td class="px-4 py-3">
+                    <span class="px-2 py-1 rounded-full text-xs 
+                        {% if file.file_type == 'audio' %}bg-purple-500/20 text-purple-400
+                        {% else %}bg-red-500/20 text-red-400{% endif %}">
+                        {{ file.file_type or 'document' }}
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    <span class="status-{{ file.status | lower }} font-medium text-sm flex items-center gap-2">
+                        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
+                            </circle>
+                            <path class="opacity-75" fill="currentColor"
+                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                            </path>
+                        </svg>
+                        {{ file.status }}
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    <div class="w-24 h-2 bg-dark-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-pulse"
+                            style="width: {% if file.status == 'QUEUED' %}10{% elif file.status == 'DOWNLOADING' %}50{% else %}80{% endif %}%">
+                        </div>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% else %}
+<div class="p-12 text-center">
+    <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-800 flex items-center justify-center">
+        <svg class="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+        </svg>
+    </div>
+    <p class="text-gray-500">No active downloads</p>
+    <p class="text-sm text-gray-600 mt-1">Approve pending files to start downloading</p>
+</div>
+{% endif %}

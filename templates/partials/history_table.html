@@ -1,0 +1,133 @@
+<!-- History Table (Completed + Failed) -->
+<div class="p-4 border-b border-gray-800">
+    <h3 class="font-semibold text-gray-200">Download History</h3>
+    <p class="text-sm text-gray-500">Completed and failed downloads</p>
+</div>
+
+<!-- Failed Files Section -->
+{% if failed_files %}
+<div class="border-b border-gray-800">
+    <div class="px-4 py-2 bg-red-500/10">
+        <h4 class="text-sm font-medium text-red-400">Failed Downloads ({{ failed_files | length }})</h4>
+    </div>
+    <table class="w-full">
+        <tbody class="divide-y divide-gray-800">
+            {% for file in failed_files %}
+            {% set format_size = format_size %}
+            {% include "partials/file_row.html" %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Completed Files Section -->
+{% if completed_files %}
+<div class="overflow-x-auto">
+    <table class="w-full">
+        <thead class="bg-dark-700 text-gray-400 text-sm">
+            <tr>
+                <th class="px-4 py-3 text-left w-10">#</th>
+                <th class="px-4 py-3 text-left">File</th>
+                <th class="px-4 py-3 text-left">Size</th>
+                <th class="px-4 py-3 text-left">Type</th>
+                <th class="px-4 py-3 text-left">Status</th>
+                <th class="px-4 py-3 text-left">Storage Path</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+            {% for file in completed_files %}
+            <tr>
+                <td class="px-4 py-3 text-gray-500 text-sm">{{ file.id }}</td>
+                <td class="px-4 py-3">
+                    <div class="flex items-center gap-3">
+                        {% if file.file_type == 'audio' %}
+                        <div class="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                            <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3">
+                                </path>
+                            </svg>
+                        </div>
+                        {% else %}
+                        <div class="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center">
+                            <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z">
+                                </path>
+                            </svg>
+                        </div>
+                        {% endif %}
+                        <div class="min-w-0">
+                            <p class="text-gray-200 truncate max-w-xs">{{ file.file_name or 'Unknown' }}</p>
+                            <p class="text-xs text-gray-500">{{ file.channel_name or file.channel_id }}</p>
+                        </div>
+                    </div>
+                </td>
+                <td class="px-4 py-3 text-gray-400 text-sm">
+                    {{ format_size(file.file_size) if file.file_size else 'Unknown' }}
+                </td>
+                <td class="px-4 py-3">
+                    <span class="px-2 py-1 rounded-full text-xs 
+                        {% if file.file_type == 'audio' %}bg-purple-500/20 text-purple-400
+                        {% else %}bg-red-500/20 text-red-400{% endif %}">
+                        {{ file.file_type or 'document' }}
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    <span class="status-completed font-medium text-sm flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7">
+                            </path>
+                        </svg>
+                        COMPLETED
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    <span class="text-xs text-gray-500 truncate max-w-xs block" title="{{ file.minio_path }}">
+                        📦 {{ file.minio_path }}
+                    </span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<div class="p-4 border-t border-gray-800 flex items-center justify-between">
+    <div class="text-sm text-gray-500">
+        Page {{ page }} of {{ total_pages }}
+    </div>
+    <div class="flex gap-2">
+        {% if has_prev %}
+        <button hx-get="/history?page={{ page - 1 }}" hx-target="#content-history" hx-swap="innerHTML"
+            class="px-3 py-1 rounded-lg bg-dark-600 text-gray-300 hover:bg-dark-500 text-sm">
+            ← Previous
+        </button>
+        {% endif %}
+        {% if has_next %}
+        <button hx-get="/history?page={{ page + 1 }}" hx-target="#content-history" hx-swap="innerHTML"
+            class="px-3 py-1 rounded-lg bg-dark-600 text-gray-300 hover:bg-dark-500 text-sm">
+            Next →
+        </button>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% else %}
+{% if not failed_files %}
+<div class="p-12 text-center">
+    <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-800 flex items-center justify-center">
+        <svg class="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+        </svg>
+    </div>
+    <p class="text-gray-500">No download history</p>
+    <p class="text-sm text-gray-600 mt-1">Completed downloads will appear here</p>
+</div>
+{% endif %}
+{% endif %}

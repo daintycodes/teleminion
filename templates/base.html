@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TeleMinion - Telegram to MinIO</title>
+    
+    <!-- TailwindCSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            900: '#0a0a0f',
+                            800: '#12121a',
+                            700: '#1a1a25',
+                            600: '#252532',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    
+    <!-- Custom Styles -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #0a0a0f 0%, #12121a 50%, #0a0a0f 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(26, 26, 37, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .gradient-border {
+            position: relative;
+        }
+        
+        .gradient-border::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            padding: 1px;
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+            -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+        }
+        
+        .status-pending { color: #fbbf24; }
+        .status-queued { color: #60a5fa; }
+        .status-downloading { color: #818cf8; animation: pulse 2s infinite; }
+        .status-uploading { color: #a78bfa; animation: pulse 2s infinite; }
+        .status-completed { color: #34d399; }
+        .status-failed { color: #f87171; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 40px -10px rgba(99, 102, 241, 0.5);
+        }
+        
+        .tab-active {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%);
+            border-color: rgba(99, 102, 241, 0.5);
+        }
+        
+        /* HTMX loading indicators */
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        
+        .htmx-indicator {
+            display: none;
+        }
+        
+        /* Table hover effects */
+        tbody tr {
+            transition: background-color 0.2s ease;
+        }
+        
+        tbody tr:hover {
+            background: rgba(99, 102, 241, 0.1);
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: rgba(99, 102, 241, 0.5);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(99, 102, 241, 0.7);
+        }
+    </style>
+</head>
+<body class="text-gray-100">
+    {% block content %}{% endblock %}
+    
+    <script>
+        // HTMX event handlers
+        document.body.addEventListener('htmx:afterSwap', function(event) {
+            // Handle any post-swap actions
+        });
+        
+        document.body.addEventListener('htmx:sendError', function(event) {
+            console.error('HTMX Error:', event.detail);
+        });
+    </script>
+</body>
+</html>
