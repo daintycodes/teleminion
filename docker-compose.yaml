@@ -42,6 +42,13 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.teleminio-app.rule=Host(`tgdatapipeline.cashab.tech`)"
+      - "traefik.http.routers.teleminio-app.entrypoints=https"
+      - "traefik.http.routers.teleminio-app.tls=true"
+      - "traefik.http.routers.teleminio-app.tls.certresolver=letsencrypt"
+      - "traefik.http.services.teleminio-app.loadbalancer.server.port=8000"
 
   # ==========================================================================
   # PostgreSQL Database
@@ -62,7 +69,7 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
-  # MinIO Object Storage
+  # MinIO Object Storage (Console)
   # ==========================================================================
   minio:
     image: minio/minio:latest
@@ -78,6 +85,13 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.teleminio-minio.rule=Host(`tgminio.cashab.tech`)"
+      - "traefik.http.routers.teleminio-minio.entrypoints=https"
+      - "traefik.http.routers.teleminio-minio.tls=true"
+      - "traefik.http.routers.teleminio-minio.tls.certresolver=letsencrypt"
+      - "traefik.http.services.teleminio-minio.loadbalancer.server.port=9001"
 
 # ==========================================================================
 # Volumes
@@ -86,3 +100,8 @@ volumes:
   postgres_data:
   minio_data:
   downloads_temp:
+
+networks:
+  default:
+    external: true
+    name: coolify
