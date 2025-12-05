@@ -8,9 +8,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: teleminio-app
-    ports:
-      - "8000:8000"
     environment:
       # Database
       DATABASE_URL: postgresql://teleminio:teleminio@postgres:5432/teleminio
@@ -51,7 +48,6 @@ services:
   # ==========================================================================
   postgres:
     image: postgres:16-alpine
-    container_name: teleminio-postgres
     environment:
       POSTGRES_USER: teleminio
       POSTGRES_PASSWORD: teleminio
@@ -70,10 +66,6 @@ services:
   # ==========================================================================
   minio:
     image: minio/minio:latest
-    container_name: teleminio-minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
