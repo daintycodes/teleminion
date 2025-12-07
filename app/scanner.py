@@ -107,15 +107,33 @@ async def scan_channel(
     try:
         # Get the channel entity (required for proper entity resolution after restart)
         try:
+            # 1. Try direct ID resolution
             entity = await client.get_entity(channel_id)
-        except Exception as entity_error:
-            logger.warning(f"Failed to get entity directly for {channel_id}, trying PeerChannel: {entity_error}")
-            from telethon.tl.types import PeerChannel
+        except Exception as e1:
+            logger.warning(f"Direct entity resolution failed for {channel_id}: {e1}")
+            
+            # 2. Try PeerChannel
             try:
+                from telethon.tl.types import PeerChannel
                 entity = await client.get_entity(PeerChannel(channel_id))
-            except Exception as peer_error:
-                logger.error(f"Failed to resolve channel {channel_id}: {peer_error}")
-                raise ValueError(f"Cannot resolve channel entity: {channel_id}")
+            except Exception as e2:
+                logger.warning(f"PeerChannel resolution failed for {channel_id}: {e2}")
+                
+                # 3. Try Username if available (we don't have username in args, need to fetch from DB)
+                # In scanner, we can query the DB for the username
+                try:
+                    from .database import get_channel_by_id
+                    channel_data = await get_channel_by_id(pool, channel_id)
+                    username = channel_data.get('username') if channel_data else None
+                    
+                    if username:
+                        logger.info(f"Trying resolution by username: {username}")
+                        entity = await client.get_entity(username)
+                    else:
+                        raise ValueError("No username available")
+                except Exception as e3:
+                    logger.error(f"Username resolution failed: {e3}")
+                    raise ValueError(f"Cannot resolve channel {channel_id}")
         
         logger.info(f"Scanning channel {channel_id} (full_scan={full_scan}, min_id={min_id})")
         

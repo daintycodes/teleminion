@@ -103,19 +103,31 @@ async def download_and_upload_file(
         logger.info(f"Downloading file {file_id}: {file_name}")
         
         # Get the channel entity first (required for entity resolution after restart)
+        # Get the channel entity first (required for entity resolution after restart)
         try:
-            # Try to get entity - for channels, we need to use the proper ID format
-            # Channels have negative IDs in some APIs, but Telethon stores positive peer IDs
+            # 1. Try direct ID resolution
             entity = await telegram_client.get_entity(channel_id)
-        except Exception as entity_error:
-            logger.warning(f"Failed to get entity directly, trying as channel: {entity_error}")
-            # Try with explicit PeerChannel
-            from telethon.tl.types import PeerChannel
+        except Exception as e1:
+            logger.warning(f"Direct entity resolution failed for {channel_id}: {e1}")
+            
+            # 2. Try PeerChannel
             try:
+                from telethon.tl.types import PeerChannel
                 entity = await telegram_client.get_entity(PeerChannel(channel_id))
-            except Exception as peer_error:
-                logger.error(f"Failed to resolve channel {channel_id}: {peer_error}")
-                raise ValueError(f"Cannot resolve channel entity: {channel_id}")
+            except Exception as e2:
+                logger.warning(f"PeerChannel resolution failed for {channel_id}: {e2}")
+                
+                # 3. Try Username if available
+                username = file_data.get('channel_username')
+                if username:
+                    try:
+                        logger.info(f"Trying resolution by username: {username}")
+                        entity = await telegram_client.get_entity(username)
+                    except Exception as e3:
+                        logger.error(f"Username resolution failed for {username}: {e3}")
+                        raise ValueError(f"Cannot resolve channel {channel_id} (username: {username})")
+                else:
+                    raise ValueError(f"Cannot resolve channel {channel_id} and no username available")
         
         # Get the message from Telegram using the resolved entity
         try:

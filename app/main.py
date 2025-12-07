@@ -114,6 +114,15 @@ async def lifespan(app: FastAPI):
         
         logger.info("Starting background tasks...")
         
+        # Warm up entity cache by fetching dialogs
+        # This fixes "Could not find the input entity" errors after restart
+        try:
+            logger.info("Warming up Telegram entity cache...")
+            await app.state.telegram_client.get_dialogs(limit=None)
+            logger.info("Entity cache warmed up")
+        except Exception as e:
+            logger.warning(f"Failed to warm up entity cache: {e}")
+        
         # Recover queue from database
         await recover_queue(app.state.db_pool, app.state.download_queue)
         
