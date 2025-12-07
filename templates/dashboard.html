@@ -301,7 +301,10 @@
             })
                 .then(response => response.text())
                 .then(html => {
-                    document.getElementById('batch-modal-content').innerHTML = html;
+                    const modalContent = document.getElementById('batch-modal-content');
+                    modalContent.innerHTML = html;
+                    // Process HTMX attributes on the newly added content
+                    htmx.process(modalContent);
                     document.getElementById('batch-modal').showModal();
                 });
         }
