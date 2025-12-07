@@ -105,8 +105,17 @@ async def scan_channel(
     min_id = 0 if full_scan else last_message_id
     
     try:
-        # Get channel entity
-        entity = await client.get_entity(channel_id)
+        # Get the channel entity (required for proper entity resolution after restart)
+        try:
+            entity = await client.get_entity(channel_id)
+        except Exception as entity_error:
+            logger.warning(f"Failed to get entity directly for {channel_id}, trying PeerChannel: {entity_error}")
+            from telethon.tl.types import PeerChannel
+            try:
+                entity = await client.get_entity(PeerChannel(channel_id))
+            except Exception as peer_error:
+                logger.error(f"Failed to resolve channel {channel_id}: {peer_error}")
+                raise ValueError(f"Cannot resolve channel entity: {channel_id}")
         
         logger.info(f"Scanning channel {channel_id} (full_scan={full_scan}, min_id={min_id})")
         
