@@ -1,19 +1,15 @@
 """
-Database layer for TeleMinion.
-Includes PostgresSession for Telethon and asyncpg pool management.
+TeleMinion V2 Database Layer
+
+PostgreSQL database operations using asyncpg.
+Includes custom PostgresSession for Telethon.
 """
-import asyncio
 import logging
-from typing import Optional, Any
 from datetime import datetime
+from typing import Optional, List, Dict, Any
 
 import asyncpg
 from telethon.sessions import MemorySession
-from telethon.crypto import AuthKey
-from telethon.tl.types import (
-    InputPeerUser, InputPeerChat, InputPeerChannel,
-    PeerUser, PeerChat, PeerChannel
-)
 
 from .config import settings
 
@@ -26,183 +22,84 @@ logger = logging.getLogger(__name__)
 
 class PostgresSession(MemorySession):
     """
-    Custom Telethon session that stores authentication data in PostgreSQL.
-    
-    Inherits from MemorySession for in-memory operations during runtime,
-    and persists to PostgreSQL for durability across container restarts.
-    
-    This avoids SQLite "database is locked" errors in Docker environments.
+    Custom Telethon session that stores auth data in PostgreSQL.
+    Inherits from MemorySession for runtime operations.
     """
     
     def __init__(self, session_id: str, pool: asyncpg.Pool):
         super().__init__()
         self._session_id = session_id
         self._pool = pool
-        self._loop = None
     
-    def _get_loop(self):
-        """Get or create event loop for sync operations."""
-        try:
-            return asyncio.get_running_loop()
-        except RuntimeError:
-            if self._loop is None:
-                self._loop = asyncio.new_event_loop()
-            return self._loop
-    
-    def _run_sync(self, coro):
-        """Run async operation synchronously."""
-        loop = self._get_loop()
-        if loop.is_running():
-            # Create a new task and wait for it
-            future = asyncio.ensure_future(coro, loop=loop)
-            # We need to return immediately and handle this differently
-            # For now, we'll use a thread-safe approach
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                new_loop = asyncio.new_event_loop()
-                future = executor.submit(new_loop.run_until_complete, coro)
-                return future.result(timeout=30)
-        else:
-            return loop.run_until_complete(coro)
-    
-    async def load_session(self) -> bool:
-        """Load session data from PostgreSQL."""
+    async def load_session(self):
+        """Load session data from database."""
         try:
             row = await self._pool.fetchrow(
-                """
-                SELECT dc_id, server_address, port, auth_key, takeout_id
-                FROM telegram_sessions
-                WHERE session_id = $1
-                """,
+                "SELECT dc_id, server_address, port, auth_key FROM telegram_sessions WHERE session_id = $1",
                 self._session_id
             )
-            
             if row:
                 self._dc_id = row['dc_id']
                 self._server_address = row['server_address']
                 self._port = row['port']
                 if row['auth_key']:
+                    from telethon.crypto import AuthKey
                     self._auth_key = AuthKey(row['auth_key'])
-                self._takeout_id = row['takeout_id']
-                logger.info(f"Loaded session for {self._session_id}")
-                return True
-            
-            logger.info(f"No existing session found for {self._session_id}")
-            return False
-            
+                logger.info(f"Loaded session: {self._session_id}")
         except Exception as e:
-            logger.error(f"Error loading session: {e}")
-            return False
+            logger.error(f"Failed to load session: {e}")
     
     async def save_session(self):
-        """Save session data to PostgreSQL."""
+        """Save session data to database."""
         try:
             auth_key_bytes = self._auth_key.key if self._auth_key else None
-            
-            await self._pool.execute(
-                """
-                INSERT INTO telegram_sessions 
-                    (session_id, dc_id, server_address, port, auth_key, takeout_id, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            await self._pool.execute("""
+                INSERT INTO telegram_sessions (session_id, dc_id, server_address, port, auth_key, updated_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
                 ON CONFLICT (session_id) DO UPDATE SET
                     dc_id = EXCLUDED.dc_id,
                     server_address = EXCLUDED.server_address,
                     port = EXCLUDED.port,
                     auth_key = EXCLUDED.auth_key,
-                    takeout_id = EXCLUDED.takeout_id,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                self._session_id,
-                self._dc_id,
-                self._server_address,
-                self._port,
-                auth_key_bytes,
-                self._takeout_id,
-                datetime.utcnow()
-            )
-            logger.debug(f"Saved session for {self._session_id}")
-            
+                    updated_at = NOW()
+            """, self._session_id, self._dc_id, self._server_address, self._port, auth_key_bytes)
+            logger.info(f"Saved session: {self._session_id}")
         except Exception as e:
-            logger.error(f"Error saving session: {e}")
-            raise
+            logger.error(f"Failed to save session: {e}")
     
-    def set_dc(self, dc_id: int, server_address: str, port: int):
-        """Set DC info and trigger save."""
+    def set_dc(self, dc_id, server_address, port):
+        """Override to track DC changes."""
         super().set_dc(dc_id, server_address, port)
-        # Schedule async save
-        try:
-            loop = asyncio.get_running_loop()
-            asyncio.create_task(self.save_session())
-        except RuntimeError:
-            pass  # No running loop, will be saved later
-    
-    @property
-    def auth_key(self):
-        return self._auth_key
-    
-    @auth_key.setter
-    def auth_key(self, value):
-        self._auth_key = value
-        # Schedule async save
-        try:
-            loop = asyncio.get_running_loop()
-            asyncio.create_task(self.save_session())
-        except RuntimeError:
-            pass
-    
-    def save(self):
-        """Sync save - create task in running loop."""
-        try:
-            loop = asyncio.get_running_loop()
-            asyncio.create_task(self.save_session())
-        except RuntimeError:
-            # No running loop
-            pass
-    
-    def delete(self):
-        """Delete session from database."""
-        async def _delete():
-            await self._pool.execute(
-                "DELETE FROM telegram_sessions WHERE session_id = $1",
-                self._session_id
-            )
-        try:
-            loop = asyncio.get_running_loop()
-            asyncio.create_task(_delete())
-        except RuntimeError:
-            pass
-    
-    def clone(self, to_instance=None):
-        cloned = PostgresSession(self._session_id, self._pool)
-        cloned._dc_id = self._dc_id
-        cloned._server_address = self._server_address  
-        cloned._port = self._port
-        cloned._auth_key = self._auth_key
-        cloned._takeout_id = self._takeout_id
-        return cloned
+        self._dc_id = dc_id
+        self._server_address = server_address
+        self._port = port
 
 
 # =============================================================================
-# Database Pool and Schema Management
+# Database Connection Pool
 # =============================================================================
 
 async def create_db_pool() -> asyncpg.Pool:
-    """Create asyncpg connection pool."""
-    # Parse DATABASE_URL
+    """Create and return a connection pool."""
+    dsn = settings.DATABASE_URL
     pool = await asyncpg.create_pool(
-        settings.DATABASE_URL,
+        dsn,
         min_size=2,
         max_size=10,
         command_timeout=60
     )
-    logger.info("Database connection pool created")
+    logger.info("Database pool created")
     return pool
 
 
+# =============================================================================
+# Schema Initialization
+# =============================================================================
+
 async def init_database(pool: asyncpg.Pool):
-    """Initialize database schema."""
+    """Initialize database schema with V2 columns."""
     async with pool.acquire() as conn:
-        # Create telegram_sessions table
+        # Telegram sessions table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS telegram_sessions (
                 session_id VARCHAR(255) PRIMARY KEY,
@@ -216,19 +113,20 @@ async def init_database(pool: asyncpg.Pool):
             )
         """)
         
-        # Create channels table
+        # Channels table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS channels (
                 id BIGINT PRIMARY KEY,
                 name VARCHAR(255),
                 username VARCHAR(255),
-                last_scanned_message_id BIGINT DEFAULT 0,
                 is_active BOOLEAN DEFAULT true,
-                added_at TIMESTAMP DEFAULT NOW()
+                last_scanned_message_id BIGINT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
         
-        # Create files table
+        # Files table with V2 columns
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id SERIAL PRIMARY KEY,
@@ -238,25 +136,58 @@ async def init_database(pool: asyncpg.Pool):
                 file_size BIGINT,
                 file_type VARCHAR(50),
                 mime_type VARCHAR(100),
-                status VARCHAR(20) DEFAULT 'PENDING',
+                status VARCHAR(30) DEFAULT 'PENDING',
+                destination_category VARCHAR(50),
                 minio_path VARCHAR(512),
                 error_message TEXT,
+                retry_count INTEGER DEFAULT 0,
+                content_hash VARCHAR(64),
+                processing_status VARCHAR(50) DEFAULT 'PENDING_PROCESSING',
+                transcript_available BOOLEAN DEFAULT false,
+                chunk_count INTEGER DEFAULT 0,
+                processed_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW(),
                 UNIQUE(channel_id, message_id)
             )
         """)
         
-        # Create indexes
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_files_status ON files(status)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_files_channel ON files(channel_id)
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_files_created ON files(created_at DESC)
-        """)
+        # V2 schema migrations - add columns if they don't exist
+        migrations = [
+            ("files", "mime_type", "VARCHAR(100)"),
+            ("files", "destination_category", "VARCHAR(50)"),
+            ("files", "retry_count", "INTEGER DEFAULT 0"),
+            ("files", "content_hash", "VARCHAR(64)"),
+            ("files", "processing_status", "VARCHAR(50) DEFAULT 'PENDING_PROCESSING'"),
+            ("files", "transcript_available", "BOOLEAN DEFAULT false"),
+            ("files", "chunk_count", "INTEGER DEFAULT 0"),
+            ("files", "processed_at", "TIMESTAMP"),
+        ]
+        
+        for table, column, col_type in migrations:
+            try:
+                await conn.execute(f"""
+                    ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}
+                """)
+            except Exception as e:
+                logger.debug(f"Column {column} may already exist: {e}")
+        
+        # Create indexes for performance
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_files_status ON files(status)",
+            "CREATE INDEX IF NOT EXISTS idx_files_status_created ON files(status, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_files_processing_status ON files(processing_status)",
+            "CREATE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_files_channel_id ON files(channel_id)",
+            "CREATE INDEX IF NOT EXISTS idx_files_category ON files(destination_category)",
+            "CREATE INDEX IF NOT EXISTS idx_channels_active ON channels(is_active)",
+        ]
+        
+        for idx_sql in indexes:
+            try:
+                await conn.execute(idx_sql)
+            except Exception as e:
+                logger.debug(f"Index may already exist: {e}")
         
         logger.info("Database schema initialized")
 
@@ -265,190 +196,355 @@ async def init_database(pool: asyncpg.Pool):
 # File Operations
 # =============================================================================
 
-async def get_files(
-    pool: asyncpg.Pool,
-    status: Optional[str] = None,
-    channel_id: Optional[int] = None,
+async def insert_file(pool: asyncpg.Pool, data: Dict[str, Any]) -> Optional[int]:
+    """Insert a new file record."""
+    try:
+        row = await pool.fetchrow("""
+            INSERT INTO files (channel_id, message_id, file_name, file_size, file_type, mime_type, 
+                               destination_category, content_hash)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (channel_id, message_id) DO NOTHING
+            RETURNING id
+        """, 
+            data.get('channel_id'),
+            data.get('message_id'),
+            data.get('file_name'),
+            data.get('file_size'),
+            data.get('file_type'),
+            data.get('mime_type'),
+            data.get('destination_category'),
+            data.get('content_hash')
+        )
+        return row['id'] if row else None
+    except Exception as e:
+        logger.error(f"Failed to insert file: {e}")
+        return None
+
+
+async def get_file_by_id(pool: asyncpg.Pool, file_id: int) -> Optional[Dict]:
+    """Get a file by ID with channel info."""
+    row = await pool.fetchrow("""
+        SELECT f.*, c.name as channel_name, c.username as channel_username
+        FROM files f
+        LEFT JOIN channels c ON f.channel_id = c.id
+        WHERE f.id = $1
+    """, file_id)
+    return dict(row) if row else None
+
+
+async def get_files_by_status(
+    pool: asyncpg.Pool, 
+    status: str,
     page: int = 1,
-    per_page: int = 50
-) -> tuple[list[dict], int]:
-    """Get paginated files with optional filtering."""
+    per_page: int = 50,
+    sort_by: str = "created_at",
+    sort_order: str = "desc"
+) -> tuple[List[Dict], int]:
+    """Get files by status with pagination and sorting."""
+    # Validate sort column
+    allowed_sorts = ["created_at", "file_name", "file_size", "file_type", "destination_category"]
+    if sort_by not in allowed_sorts:
+        sort_by = "created_at"
+    if sort_order.lower() not in ["asc", "desc"]:
+        sort_order = "desc"
+    
     offset = (page - 1) * per_page
     
-    # Build query
-    where_clauses = []
-    params = []
-    param_count = 0
+    # Get total count
+    total = await pool.fetchval(
+        "SELECT COUNT(*) FROM files WHERE status = $1",
+        status
+    )
     
-    if status:
-        param_count += 1
-        if status == "ACTIVE":
-            where_clauses.append(f"f.status IN ('QUEUED', 'DOWNLOADING', 'UPLOADING')")
-        else:
-            where_clauses.append(f"f.status = ${param_count}")
-            params.append(status)
+    # Get paginated results
+    rows = await pool.fetch(f"""
+        SELECT f.*, c.name as channel_name, c.username as channel_username
+        FROM files f
+        LEFT JOIN channels c ON f.channel_id = c.id
+        WHERE f.status = $1
+        ORDER BY f.{sort_by} {sort_order}
+        LIMIT $2 OFFSET $3
+    """, status, per_page, offset)
     
-    if channel_id:
-        param_count += 1
-        where_clauses.append(f"f.channel_id = ${param_count}")
-        params.append(channel_id)
-    
-    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-    
-    async with pool.acquire() as conn:
-        # Get total count
-        count_query = f"SELECT COUNT(*) FROM files f WHERE {where_sql}"
-        total = await conn.fetchval(count_query, *params)
-        
-        # Get files with channel name
-        query = f"""
-            SELECT f.*, c.name as channel_name, c.username as channel_username
-            FROM files f
-            LEFT JOIN channels c ON f.channel_id = c.id
-            WHERE {where_sql}
-            ORDER BY f.created_at DESC
-            LIMIT ${param_count + 1} OFFSET ${param_count + 2}
-        """
-        params.extend([per_page, offset])
-        
-        rows = await conn.fetch(query, *params)
-        files = [dict(row) for row in rows]
-        
-    return files, total
+    return [dict(r) for r in rows], total
 
 
-async def get_file_by_id(pool: asyncpg.Pool, file_id: int) -> Optional[dict]:
-    """Get a single file by ID."""
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT f.*, c.name as channel_name, c.username as channel_username
-            FROM files f
-            LEFT JOIN channels c ON f.channel_id = c.id
-            WHERE f.id = $1
-            """,
-            file_id
-        )
-        return dict(row) if row else None
+async def get_active_files(pool: asyncpg.Pool) -> List[Dict]:
+    """Get files with active statuses (QUEUED, DOWNLOADING, UPLOADING)."""
+    rows = await pool.fetch("""
+        SELECT f.*, c.name as channel_name, c.username as channel_username
+        FROM files f
+        LEFT JOIN channels c ON f.channel_id = c.id
+        WHERE f.status IN ('QUEUED', 'DOWNLOADING', 'UPLOADING')
+        ORDER BY f.updated_at DESC
+    """)
+    return [dict(r) for r in rows]
+
+
+async def get_history_files(
+    pool: asyncpg.Pool,
+    page: int = 1,
+    per_page: int = 50
+) -> tuple[List[Dict], List[Dict], int]:
+    """Get completed and failed files for history view."""
+    offset = (page - 1) * per_page
+    
+    # Failed files (always show all)
+    failed_rows = await pool.fetch("""
+        SELECT f.*, c.name as channel_name, c.username as channel_username
+        FROM files f
+        LEFT JOIN channels c ON f.channel_id = c.id
+        WHERE f.status IN ('FAILED', 'FAILED_PERMANENT')
+        ORDER BY f.updated_at DESC
+    """)
+    
+    # Completed files (paginated)
+    completed_rows = await pool.fetch("""
+        SELECT f.*, c.name as channel_name, c.username as channel_username
+        FROM files f
+        LEFT JOIN channels c ON f.channel_id = c.id
+        WHERE f.status = 'COMPLETED'
+        ORDER BY f.updated_at DESC
+        LIMIT $1 OFFSET $2
+    """, per_page, offset)
+    
+    # Total completed
+    total = await pool.fetchval(
+        "SELECT COUNT(*) FROM files WHERE status = 'COMPLETED'"
+    )
+    
+    return [dict(r) for r in failed_rows], [dict(r) for r in completed_rows], total
 
 
 async def update_file_status(
-    pool: asyncpg.Pool,
-    file_id: int,
-    status: str,
-    minio_path: Optional[str] = None,
-    error_message: Optional[str] = None
-):
-    """Update file status."""
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE files 
-            SET status = $2, 
-                minio_path = COALESCE($3, minio_path),
-                error_message = $4,
+    pool: asyncpg.Pool, 
+    file_id: int, 
+    status: str, 
+    **kwargs
+) -> bool:
+    """Update file status and optional fields."""
+    updates = ["status = $2", "updated_at = NOW()"]
+    values = [file_id, status]
+    param_idx = 3
+    
+    for key, value in kwargs.items():
+        if key in ['minio_path', 'error_message', 'destination_category', 'content_hash', 
+                   'processing_status', 'retry_count']:
+            updates.append(f"{key} = ${param_idx}")
+            values.append(value)
+            param_idx += 1
+    
+    query = f"UPDATE files SET {', '.join(updates)} WHERE id = $1"
+    
+    try:
+        await pool.execute(query, *values)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update file {file_id}: {e}")
+        return False
+
+
+async def increment_retry_count(pool: asyncpg.Pool, file_id: int) -> int:
+    """Increment retry count and return new value."""
+    row = await pool.fetchrow("""
+        UPDATE files 
+        SET retry_count = retry_count + 1, updated_at = NOW()
+        WHERE id = $1
+        RETURNING retry_count
+    """, file_id)
+    return row['retry_count'] if row else 0
+
+
+async def update_file_category(pool: asyncpg.Pool, file_id: int, category: str) -> bool:
+    """Update file destination category."""
+    try:
+        await pool.execute("""
+            UPDATE files SET destination_category = $2, updated_at = NOW()
+            WHERE id = $1
+        """, file_id, category)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update category for file {file_id}: {e}")
+        return False
+
+
+async def mark_file_processed(pool: asyncpg.Pool, file_id: int, data: Dict) -> bool:
+    """Mark file as processed by n8n."""
+    try:
+        await pool.execute("""
+            UPDATE files SET 
+                processing_status = $2,
+                transcript_available = $3,
+                chunk_count = $4,
+                processed_at = NOW(),
                 updated_at = NOW()
             WHERE id = $1
-            """,
-            file_id, status, minio_path, error_message
+        """, 
+            file_id, 
+            data.get('processing_status', 'PROCESSED'),
+            data.get('has_transcript', False),
+            data.get('chunk_count', 0)
         )
+        return True
+    except Exception as e:
+        logger.error(f"Failed to mark file {file_id} as processed: {e}")
+        return False
 
 
-async def insert_file(pool: asyncpg.Pool, file_data: dict) -> int:
-    """Insert a new file record. Returns file ID."""
-    async with pool.acquire() as conn:
-        file_id = await conn.fetchval(
-            """
-            INSERT INTO files (channel_id, message_id, file_name, file_size, file_type, mime_type)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (channel_id, message_id) DO NOTHING
-            RETURNING id
-            """,
-            file_data['channel_id'],
-            file_data['message_id'],
-            file_data.get('file_name'),
-            file_data.get('file_size'),
-            file_data.get('file_type'),
-            file_data.get('mime_type')
-        )
-        return file_id
+async def get_unprocessed_files(pool: asyncpg.Pool) -> List[Dict]:
+    """Get files ready for n8n processing (uploaded but not processed)."""
+    rows = await pool.fetch("""
+        SELECT f.*, c.name as channel_name, c.username as channel_username
+        FROM files f
+        LEFT JOIN channels c ON f.channel_id = c.id
+        WHERE f.status = 'COMPLETED' 
+        AND f.processing_status = 'PENDING_PROCESSING'
+        ORDER BY f.created_at ASC
+        LIMIT 100
+    """)
+    return [dict(r) for r in rows]
+
+
+async def check_content_hash_exists(pool: asyncpg.Pool, content_hash: str) -> Optional[int]:
+    """Check if a file with this content hash already exists."""
+    row = await pool.fetchrow(
+        "SELECT id FROM files WHERE content_hash = $1",
+        content_hash
+    )
+    return row['id'] if row else None
+
+
+# =============================================================================
+# Queue Recovery
+# =============================================================================
+
+async def get_queued_file_ids(pool: asyncpg.Pool) -> List[int]:
+    """Get IDs of files with QUEUED status for queue recovery on restart."""
+    rows = await pool.fetch(
+        "SELECT id FROM files WHERE status = 'QUEUED' ORDER BY updated_at ASC"
+    )
+    return [r['id'] for r in rows]
+
+
+async def reset_downloading_files(pool: asyncpg.Pool) -> int:
+    """Reset files stuck in DOWNLOADING/UPLOADING to QUEUED on restart."""
+    result = await pool.execute("""
+        UPDATE files 
+        SET status = 'QUEUED', updated_at = NOW()
+        WHERE status IN ('DOWNLOADING', 'UPLOADING')
+    """)
+    count = int(result.split()[-1]) if result else 0
+    if count > 0:
+        logger.info(f"Reset {count} stuck files to QUEUED")
+    return count
+
+
+# =============================================================================
+# Self-Healing
+# =============================================================================
+
+async def get_completed_files_for_healing(pool: asyncpg.Pool) -> List[Dict]:
+    """Get completed files for self-healing check."""
+    rows = await pool.fetch("""
+        SELECT id, minio_path, destination_category
+        FROM files 
+        WHERE status = 'COMPLETED'
+        AND status != 'FAILED_PERMANENT'
+    """)
+    return [dict(r) for r in rows]
+
+
+async def revert_file_to_pending(pool: asyncpg.Pool, file_id: int) -> bool:
+    """Revert a file to PENDING status (for self-healing)."""
+    try:
+        await pool.execute("""
+            UPDATE files 
+            SET status = 'PENDING', minio_path = NULL, updated_at = NOW()
+            WHERE id = $1
+        """, file_id)
+        logger.info(f"Reverted file {file_id} to PENDING (self-healing)")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to revert file {file_id}: {e}")
+        return False
 
 
 # =============================================================================
 # Channel Operations
 # =============================================================================
 
-async def get_channels(pool: asyncpg.Pool, active_only: bool = True) -> list[dict]:
-    """Get all channels."""
-    async with pool.acquire() as conn:
-        query = "SELECT * FROM channels"
-        if active_only:
-            query += " WHERE is_active = true"
-        query += " ORDER BY added_at DESC"
-        
-        rows = await conn.fetch(query)
-        return [dict(row) for row in rows]
+async def get_active_channels(pool: asyncpg.Pool) -> List[Dict]:
+    """Get all active channels."""
+    rows = await pool.fetch(
+        "SELECT * FROM channels WHERE is_active = true ORDER BY name"
+    )
+    return [dict(r) for r in rows]
 
 
-async def get_channel_by_id(pool: asyncpg.Pool, channel_id: int) -> Optional[dict]:
-    """Get channel by ID."""
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM channels WHERE id = $1",
-            channel_id
-        )
-        return dict(row) if row else None
+async def get_channel_by_id(pool: asyncpg.Pool, channel_id: int) -> Optional[Dict]:
+    """Get a channel by ID."""
+    row = await pool.fetchrow("SELECT * FROM channels WHERE id = $1", channel_id)
+    return dict(row) if row else None
 
 
-async def insert_channel(pool: asyncpg.Pool, channel_data: dict):
+async def insert_channel(pool: asyncpg.Pool, data: Dict) -> bool:
     """Insert or update a channel."""
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
+    try:
+        await pool.execute("""
             INSERT INTO channels (id, name, username)
             VALUES ($1, $2, $3)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 username = EXCLUDED.username,
-                is_active = true
-            """,
-            channel_data['id'],
-            channel_data.get('name'),
-            channel_data.get('username')
-        )
+                is_active = true,
+                updated_at = NOW()
+        """, data['id'], data.get('name'), data.get('username'))
+        return True
+    except Exception as e:
+        logger.error(f"Failed to insert channel: {e}")
+        return False
 
 
 async def update_channel_last_scanned(pool: asyncpg.Pool, channel_id: int, message_id: int):
-    """Update last scanned message ID."""
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE channels 
-            SET last_scanned_message_id = $2
+    """Update the last scanned message ID for a channel."""
+    await pool.execute("""
+        UPDATE channels SET last_scanned_message_id = $2, updated_at = NOW()
+        WHERE id = $1
+    """, channel_id, message_id)
+
+
+async def deactivate_channel(pool: asyncpg.Pool, channel_id: int) -> bool:
+    """Deactivate a channel."""
+    try:
+        await pool.execute("""
+            UPDATE channels SET is_active = false, updated_at = NOW()
             WHERE id = $1
-            """,
-            channel_id, message_id
-        )
+        """, channel_id)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to deactivate channel: {e}")
+        return False
 
 
-async def delete_channel(pool: asyncpg.Pool, channel_id: int):
-    """Soft delete a channel (set inactive)."""
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE channels SET is_active = false WHERE id = $1",
-            channel_id
-        )
+# =============================================================================
+# Statistics
+# =============================================================================
 
-
-async def get_channel_stats(pool: asyncpg.Pool) -> dict:
-    """Get overall channel and file statistics."""
-    async with pool.acquire() as conn:
-        stats = await conn.fetchrow("""
-            SELECT 
-                (SELECT COUNT(*) FROM channels WHERE is_active = true) as active_channels,
-                (SELECT COUNT(*) FROM files WHERE status = 'PENDING') as pending_files,
-                (SELECT COUNT(*) FROM files WHERE status IN ('QUEUED', 'DOWNLOADING', 'UPLOADING')) as active_files,
-                (SELECT COUNT(*) FROM files WHERE status = 'COMPLETED') as completed_files,
-                (SELECT COUNT(*) FROM files WHERE status = 'FAILED') as failed_files
-        """)
-        return dict(stats)
+async def get_dashboard_stats(pool: asyncpg.Pool) -> Dict:
+    """Get statistics for dashboard."""
+    stats = await pool.fetchrow("""
+        SELECT 
+            COUNT(*) FILTER (WHERE status = 'PENDING') as pending_files,
+            COUNT(*) FILTER (WHERE status IN ('QUEUED', 'DOWNLOADING', 'UPLOADING')) as active_files,
+            COUNT(*) FILTER (WHERE status = 'COMPLETED') as completed_files,
+            COUNT(*) FILTER (WHERE status IN ('FAILED', 'FAILED_PERMANENT')) as failed_files,
+            (SELECT COUNT(*) FROM channels WHERE is_active = true) as active_channels
+        FROM files
+    """)
+    return dict(stats) if stats else {
+        'pending_files': 0,
+        'active_files': 0,
+        'completed_files': 0,
+        'failed_files': 0,
+        'active_channels': 0
+    }

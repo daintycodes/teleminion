@@ -1,101 +1,118 @@
-<tr id="file-{{ file.id }}" {% if file.status in ['QUEUED', 'DOWNLOADING' , 'UPLOADING' ] %}
-    hx-get="/files/{{ file.id }}/status" hx-trigger="every 2s" hx-swap="outerHTML" {% endif %}>
-    <td class="px-4 py-3">
-        <input type="checkbox" name="file_ids" value="{{ file.id }}"
-            class="rounded border-gray-600 bg-dark-700 text-indigo-500 focus:ring-indigo-500" {% if file.status
-            !='PENDING' %}disabled{% endif %}>
-    </td>
-    <td class="px-4 py-3">
-        <div class="flex items-center gap-3">
-            <!-- File type icon -->
-            {% if file.file_type == 'audio' %}
-            <div class="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
-                <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3">
-                    </path>
-                </svg>
-            </div>
-            {% else %}
-            <div class="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center">
-                <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z">
-                    </path>
-                </svg>
-            </div>
-            {% endif %}
-            <div class="min-w-0">
-                <p class="text-gray-200 truncate max-w-xs" title="{{ file.file_name }}">
-                    {{ file.file_name or 'Unknown' }}
-                </p>
-                <p class="text-xs text-gray-500">
-                    {{ file.channel_name or file.channel_username or file.channel_id }}
-                </p>
-            </div>
-        </div>
-    </td>
-    <td class="px-4 py-3 text-gray-400 text-sm">
-        {{ format_size(file.file_size) if file.file_size else 'Unknown' }}
-    </td>
-    <td class="px-4 py-3">
-        <span class="px-2 py-1 rounded-full text-xs 
-            {% if file.file_type == 'audio' %}
-            bg-purple-500/20 text-purple-400
-            {% else %}
-            bg-red-500/20 text-red-400
-            {% endif %}">
-            {{ file.file_type or 'document' }}
-        </span>
-    </td>
-    <td class="px-4 py-3">
-        <span class="status-{{ file.status | lower }} font-medium text-sm flex items-center gap-2">
-            {% if file.status == 'DOWNLOADING' %}
-            <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
-                </path>
-            </svg>
-            {% elif file.status == 'UPLOADING' %}
-            <svg class="w-4 h-4 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-            </svg>
-            {% elif file.status == 'COMPLETED' %}
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-            </svg>
-            {% elif file.status == 'FAILED' %}
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-            </svg>
-            {% endif %}
-            {{ file.status }}
-        </span>
-        {% if file.error_message %}
-        <p class="text-xs text-red-400 mt-1 truncate max-w-xs" title="{{ file.error_message }}">
-            {{ file.error_message }}
-        </p>
+<!-- File Row Partial -->
+<tr id="file-row-{{ file.id }}" class="border-b border-gray-800/50 hover:bg-gray-800/30">
+    <!-- Checkbox -->
+    <td class="py-3">
+        {% if file.status == 'PENDING' %}
+        <input type="checkbox" class="file-checkbox rounded bg-gray-700 border-gray-600" data-file-id="{{ file.id }}"
+            onchange="toggleFileSelection(this, {{ file.id }})">
         {% endif %}
     </td>
-    <td class="px-4 py-3">
-        {% if file.status == 'PENDING' %}
-        <button hx-post="/files/{{ file.id }}/approve" hx-target="#file-{{ file.id }}" hx-swap="outerHTML"
-            class="px-3 py-1 rounded-lg bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 text-sm font-medium transition-colors">
-            Approve
-        </button>
-        {% elif file.status == 'FAILED' %}
-        <button hx-post="/files/{{ file.id }}/retry" hx-target="#file-{{ file.id }}" hx-swap="outerHTML"
-            class="px-3 py-1 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 text-sm font-medium transition-colors">
-            Retry
-        </button>
-        {% elif file.status == 'COMPLETED' and file.minio_path %}
-        <span class="text-xs text-gray-500" title="{{ file.minio_path }}">
-            📦 Stored
+
+    <!-- Type Icon -->
+    <td class="py-3">
+        {% if file.file_type == 'audio' %}
+        <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-500/20 text-purple-400 text-xs">
+            🎵 Audio
+        </span>
+        {% elif file.file_type == 'pdf' %}
+        <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-red-500/20 text-red-400 text-xs">
+            📄 PDF
         </span>
         {% else %}
-        <span class="text-xs text-gray-600">—</span>
+        <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-500/20 text-gray-400 text-xs">
+            📎 File
+        </span>
+        {% endif %}
+    </td>
+
+    <!-- File Name -->
+    <td class="py-3">
+        <div class="max-w-xs truncate text-white" title="{{ file.file_name }}">
+            {{ file.file_name or 'Unknown' }}
+        </div>
+        {% if file.channel_name %}
+        <div class="text-xs text-gray-500 truncate">
+            from {{ file.channel_name }}
+        </div>
+        {% endif %}
+    </td>
+
+    <!-- Size -->
+    <td class="py-3 text-gray-400">
+        {% if file.file_size %}
+        {% if file.file_size < 1024 %} {{ file.file_size }} B {% elif file.file_size < 1048576 %} {{ (file.file_size /
+            1024)|round(1) }} KB {% elif file.file_size < 1073741824 %} {{ (file.file_size / 1048576)|round(1) }} MB {%
+            else %} {{ (file.file_size / 1073741824)|round(2) }} GB {% endif %} {% else %} -- {% endif %} </td>
+
+            <!-- Category -->
+    <td class="py-3">
+        {% if file.status == 'PENDING' %}
+        <form hx-post="/files/{{ file.id }}/category" hx-target="#file-row-{{ file.id }}" hx-swap="outerHTML"
+            hx-trigger="change">
+            <select name="category" class="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white">
+                {% set file_type = file.file_type or 'other' %}
+                {% set options = mime_options.get(file_type, []) %}
+                {% for opt in options %}
+                <option value="{{ opt }}" {% if file.destination_category==opt %}selected{% endif %}>
+                    {{ categories[opt].label }}
+                </option>
+                {% endfor %}
+            </select>
+        </form>
+        {% else %}
+        <span class="text-gray-400 text-xs">
+            {{ categories.get(file.destination_category, {}).get('label', file.destination_category or '--') }}
+        </span>
+        {% endif %}
+    </td>
+
+    <!-- Date -->
+    <td class="py-3 text-gray-400 text-xs">
+        {% if file.created_at %}
+        {{ file.created_at.strftime('%Y-%m-%d %H:%M') }}
+        {% else %}
+        --
+        {% endif %}
+    </td>
+
+    <!-- Actions -->
+    <td class="py-3 text-right">
+        {% if file.status == 'PENDING' %}
+        <button hx-post="/files/{{ file.id }}/approve" hx-target="#file-row-{{ file.id }}" hx-swap="outerHTML"
+            class="px-3 py-1 rounded text-xs font-medium text-white"
+            style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+            Approve
+        </button>
+        {% elif file.status == 'QUEUED' %}
+        <span class="px-3 py-1 rounded bg-blue-500/20 text-blue-400 text-xs">
+            Queued
+        </span>
+        {% elif file.status == 'DOWNLOADING' %}
+        <span class="px-3 py-1 rounded bg-cyan-500/20 text-cyan-400 text-xs animate-pulse">
+            Downloading...
+        </span>
+        {% elif file.status == 'UPLOADING' %}
+        <span class="px-3 py-1 rounded bg-amber-500/20 text-amber-400 text-xs animate-pulse">
+            Uploading...
+        </span>
+        {% elif file.status == 'COMPLETED' %}
+        <span class="px-3 py-1 rounded bg-green-500/20 text-green-400 text-xs">
+            ✓ Done
+        </span>
+        {% elif file.status == 'FAILED' %}
+        <div class="flex items-center gap-2 justify-end">
+            <span class="px-2 py-1 rounded bg-red-500/20 text-red-400 text-xs" title="{{ file.error_message }}">
+                Failed
+            </span>
+            <button hx-post="/files/{{ file.id }}/retry" hx-target="#file-row-{{ file.id }}" hx-swap="outerHTML"
+                class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">
+                Retry
+            </button>
+        </div>
+        {% elif file.status == 'FAILED_PERMANENT' %}
+        <span class="px-3 py-1 rounded bg-red-900/30 text-red-400 text-xs" title="{{ file.error_message }}">
+            ✕ Permanent
+        </span>
         {% endif %}
     </td>
 </tr>

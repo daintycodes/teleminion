@@ -1,0 +1,51 @@
+<!-- Batch Modal Content Partial -->
+<form hx-post="/files/batch/approve" hx-target="#batch-modal-content" hx-swap="innerHTML">
+
+    <p class="text-gray-300 mb-4">
+        Approve <strong class="text-white">{{ total_files }}</strong> files with the following category assignments:
+    </p>
+
+    <div class="space-y-4">
+        {% for group in groups %}
+        <div class="p-4 bg-gray-800/50 rounded-lg">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    {% if group.file_type == 'audio' %}
+                    <span class="text-2xl">🎵</span>
+                    <span class="text-white font-medium">{{ group.count }} Audio files</span>
+                    {% elif group.file_type == 'pdf' %}
+                    <span class="text-2xl">📄</span>
+                    <span class="text-white font-medium">{{ group.count }} PDF files</span>
+                    {% endif %}
+                </div>
+
+                <div class="flex items-center gap-2">
+                    <span class="text-gray-400 text-sm">→</span>
+                    <select name="{{ group.file_type }}_category"
+                        class="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm">
+                        {% for opt in group.category_options %}
+                        <option value="{{ opt }}" {% if group.default_category==opt %}selected{% endif %}>
+                            {{ categories[opt].label }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <!-- Hidden field with file IDs -->
+            <input type="hidden" name="{{ group.file_type }}_file_ids" value="{{ group.file_ids | join(',') }}">
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="flex justify-end gap-3 mt-6">
+        <button type="button" onclick="document.getElementById('batch-modal').close()"
+            class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white text-sm">
+            Cancel
+        </button>
+        <button type="submit" class="px-6 py-2 rounded-lg text-white text-sm font-medium"
+            style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+            Confirm & Queue
+        </button>
+    </div>
+</form>

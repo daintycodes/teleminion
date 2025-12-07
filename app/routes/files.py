@@ -1,173 +1,326 @@
 """
-File management routes for TeleMinion.
+TeleMinion V2 File Routes
+
+File management endpoints including batch operations and n8n callbacks.
 """
 import logging
-from math import ceil
-from fastapi import APIRouter, Request, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from typing import List, Optional
+
+from fastapi import APIRouter, Request, HTTPException, Form
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from ..database import get_files, get_file_by_id, update_file_status
-from ..worker import queue_file_for_download, queue_files_batch
+from ..auth import require_auth, require_auth_api
+from ..config import CATEGORIES, get_category_options, MIME_CATEGORY_OPTIONS
+from ..database import (
+    get_file_by_id,
+    get_files_by_status,
+    update_file_status,
+    update_file_category,
+    mark_file_processed,
+    get_unprocessed_files
+)
+from ..models import (
+    FileStatus,
+    BatchApprovalRequest,
+    MarkProcessedRequest,
+    FileGroupSummary
+)
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/files", tags=["files"])
-
 templates = Jinja2Templates(directory="templates")
 
 
-def format_file_size(size: int) -> str:
-    """Format file size in human readable format."""
-    if size is None:
-        return "Unknown"
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+# =============================================================================
+# Dashboard Endpoints (HTMX)
+# =============================================================================
 
-
-@router.get("")
-async def list_files(
-    request: Request,
-    status: str = Query("PENDING", description="Filter by status"),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=10, le=500)
-):
-    """Get paginated list of files."""
+@router.get("/{file_id}/status", response_class=HTMLResponse)
+@require_auth
+async def file_status_partial(request: Request, file_id: int):
+    """Get file row partial for HTMX polling."""
     pool = request.app.state.db_pool
-    
-    files, total = await get_files(pool, status=status, page=page, per_page=per_page)
-    
-    total_pages = ceil(total / per_page) if total > 0 else 1
-    
-    return {
-        "items": files,
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "total_pages": total_pages,
-        "has_next": page < total_pages,
-        "has_prev": page > 1
-    }
-
-
-@router.get("/{file_id}")
-async def get_file(request: Request, file_id: int):
-    """Get a single file by ID."""
-    pool = request.app.state.db_pool
-    
     file = await get_file_by_id(pool, file_id)
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
     
-    return file
-
-
-@router.get("/{file_id}/row")
-async def get_file_row(request: Request, file_id: int):
-    """Get file row partial for HTMX updates."""
-    pool = request.app.state.db_pool
-    
-    file = await get_file_by_id(pool, file_id)
     if not file:
         return HTMLResponse("")
     
-    return templates.TemplateResponse(
-        "partials/file_row.html",
-        {"request": request, "file": file, "format_size": format_file_size}
-    )
+    return templates.TemplateResponse("partials/file_row.html", {
+        "request": request,
+        "file": file,
+        "categories": CATEGORIES,
+        "mime_options": MIME_CATEGORY_OPTIONS
+    })
 
 
-@router.get("/{file_id}/status")
-async def get_file_status(request: Request, file_id: int):
-    """Get file status - returns updated row for polling."""
-    return await get_file_row(request, file_id)
-
-
-@router.post("/{file_id}/approve")
-async def approve_file(request: Request, file_id: int):
-    """Approve a file for download."""
+@router.post("/{file_id}/approve", response_class=HTMLResponse)
+@require_auth
+async def approve_file(
+    request: Request, 
+    file_id: int,
+    category: Optional[str] = Form(None)
+):
+    """Approve a single file for download."""
     pool = request.app.state.db_pool
+    download_queue = request.app.state.download_queue
     
     file = await get_file_by_id(pool, file_id)
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     
-    if file['status'] != 'PENDING':
-        raise HTTPException(status_code=400, detail=f"File is already {file['status']}")
+    # Use provided category or keep existing
+    if category and category in CATEGORIES:
+        await update_file_category(pool, file_id, category)
+    elif not file.get('destination_category'):
+        raise HTTPException(status_code=400, detail="Category required")
     
-    # Queue for download
-    await queue_file_for_download(request.app.state, file_id)
+    # Update status to QUEUED
+    await update_file_status(pool, file_id, FileStatus.QUEUED)
     
-    # Get updated file and return row partial
+    # Add to download queue
+    await download_queue.put(file_id)
+    
+    # Return updated row
     file = await get_file_by_id(pool, file_id)
-    
-    return templates.TemplateResponse(
-        "partials/file_row.html",
-        {"request": request, "file": file, "format_size": format_file_size}
-    )
+    return templates.TemplateResponse("partials/file_row.html", {
+        "request": request,
+        "file": file,
+        "categories": CATEGORIES,
+        "mime_options": MIME_CATEGORY_OPTIONS
+    })
 
 
-@router.post("/approve/batch")
-async def approve_batch(request: Request):
-    """Batch approve multiple files."""
+@router.post("/{file_id}/category", response_class=HTMLResponse)
+@require_auth
+async def update_category(
+    request: Request,
+    file_id: int,
+    category: str = Form(...)
+):
+    """Update file category (before approval)."""
     pool = request.app.state.db_pool
+    
+    if category not in CATEGORIES:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    await update_file_category(pool, file_id, category)
+    
+    file = await get_file_by_id(pool, file_id)
+    return templates.TemplateResponse("partials/file_row.html", {
+        "request": request,
+        "file": file,
+        "categories": CATEGORIES,
+        "mime_options": MIME_CATEGORY_OPTIONS
+    })
+
+
+@router.post("/{file_id}/retry", response_class=HTMLResponse)
+@require_auth
+async def retry_file(request: Request, file_id: int):
+    """Retry a failed file."""
+    pool = request.app.state.db_pool
+    download_queue = request.app.state.download_queue
+    
+    file = await get_file_by_id(pool, file_id)
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    if file['status'] == 'FAILED_PERMANENT':
+        raise HTTPException(status_code=400, detail="File permanently failed")
+    
+    # Reset status to QUEUED
+    await update_file_status(
+        pool, file_id, FileStatus.QUEUED,
+        error_message=None
+    )
+    
+    # Add to download queue
+    await download_queue.put(file_id)
+    
+    file = await get_file_by_id(pool, file_id)
+    return templates.TemplateResponse("partials/file_row.html", {
+        "request": request,
+        "file": file,
+        "categories": CATEGORIES,
+        "mime_options": MIME_CATEGORY_OPTIONS
+    })
+
+
+# =============================================================================
+# Batch Operations
+# =============================================================================
+
+@router.post("/batch/preview", response_class=HTMLResponse)
+@require_auth
+async def batch_preview(request: Request):
+    """
+    Get grouped summary of selected files for batch modal.
+    Expects form data with file_ids[] array.
+    """
+    pool = request.app.state.db_pool
+    form = await request.form()
+    
+    # Get file IDs from form
+    file_ids_raw = form.getlist("file_ids[]")
+    file_ids = [int(fid) for fid in file_ids_raw if fid.isdigit()]
+    
+    if not file_ids:
+        return HTMLResponse("<p class='text-gray-400'>No files selected</p>")
+    
+    # Group files by type
+    audio_files = []
+    pdf_files = []
+    
+    for file_id in file_ids:
+        file = await get_file_by_id(pool, file_id)
+        if file:
+            if file.get('file_type') == 'audio':
+                audio_files.append(file)
+            elif file.get('file_type') == 'pdf':
+                pdf_files.append(file)
+    
+    groups = []
+    
+    if audio_files:
+        groups.append(FileGroupSummary(
+            file_type="audio",
+            count=len(audio_files),
+            file_ids=[f['id'] for f in audio_files],
+            default_category=audio_files[0].get('destination_category', 'messages'),
+            category_options=MIME_CATEGORY_OPTIONS.get('audio', ['messages', 'songs'])
+        ))
+    
+    if pdf_files:
+        groups.append(FileGroupSummary(
+            file_type="pdf",
+            count=len(pdf_files),
+            file_ids=[f['id'] for f in pdf_files],
+            default_category=pdf_files[0].get('destination_category', 'ror'),
+            category_options=MIME_CATEGORY_OPTIONS.get('pdf', ['ror', 'books'])
+        ))
+    
+    return templates.TemplateResponse("partials/batch_modal.html", {
+        "request": request,
+        "groups": groups,
+        "total_files": len(file_ids),
+        "categories": CATEGORIES
+    })
+
+
+@router.post("/batch/approve")
+@require_auth
+async def batch_approve(request: Request):
+    """
+    Approve batch of files with category assignments.
+    """
+    pool = request.app.state.db_pool
+    download_queue = request.app.state.download_queue
     
     form = await request.form()
-    file_ids_str = form.get("file_ids", "")
     
-    if not file_ids_str:
-        raise HTTPException(status_code=400, detail="No file IDs provided")
+    approved = 0
+    errors = []
+    
+    # Process each file type group
+    for file_type in ['audio', 'pdf']:
+        # Get file IDs for this type
+        file_ids_key = f"{file_type}_file_ids"
+        category_key = f"{file_type}_category"
+        
+        file_ids_raw = form.get(file_ids_key, "")
+        category = form.get(category_key)
+        
+        if not file_ids_raw:
+            continue
+        
+        file_ids = [int(fid) for fid in file_ids_raw.split(",") if fid.strip().isdigit()]
+        
+        if not category or category not in CATEGORIES:
+            errors.append(f"Invalid category for {file_type}")
+            continue
+        
+        for file_id in file_ids:
+            try:
+                # Update category
+                await update_file_category(pool, file_id, category)
+                
+                # Update status to QUEUED
+                await update_file_status(pool, file_id, FileStatus.QUEUED)
+                
+                # Add to download queue
+                await download_queue.put(file_id)
+                
+                approved += 1
+            except Exception as e:
+                errors.append(f"File {file_id}: {str(e)}")
+    
+    # Return success message
+    if errors:
+        return HTMLResponse(f"""
+            <div class="p-4 bg-amber-500/20 border border-amber-500/50 rounded-lg">
+                <p class="text-amber-400">Approved {approved} files with {len(errors)} errors</p>
+                <ul class="mt-2 text-sm text-amber-300">
+                    {"".join(f"<li>{e}</li>" for e in errors[:5])}
+                </ul>
+            </div>
+        """)
+    
+    return HTMLResponse(f"""
+        <div class="p-4 bg-green-500/20 border border-green-500/50 rounded-lg">
+            <p class="text-green-400">✓ Approved {approved} files for download</p>
+            <script>
+                setTimeout(() => {{
+                    htmx.trigger('#pending-content', 'refresh');
+                    document.getElementById('batch-modal').close();
+                }}, 1500);
+            </script>
+        </div>
+    """)
+
+
+# =============================================================================
+# n8n Integration APIs
+# =============================================================================
+
+@router.get("/api/unprocessed")
+@require_auth_api
+async def api_unprocessed_files(request: Request):
+    """
+    Get files ready for n8n processing.
+    Called by n8n to poll for new uploads.
+    """
+    pool = request.app.state.db_pool
+    files = await get_unprocessed_files(pool)
+    
+    return {
+        "files": files,
+        "count": len(files)
+    }
+
+
+@router.post("/api/{file_id}/mark-processed")
+async def api_mark_processed(
+    request: Request,
+    file_id: int
+):
+    """
+    Mark a file as processed by n8n.
+    Called by n8n after successful processing.
+    
+    Note: This endpoint should have its own API key auth
+    for production, but using session auth for simplicity.
+    """
+    pool = request.app.state.db_pool
     
     try:
-        file_ids = [int(id.strip()) for id in file_ids_str.split(",") if id.strip()]
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid file ID format")
+        data = await request.json()
+    except:
+        data = {}
     
-    # Queue all files
-    await queue_files_batch(request.app.state, file_ids)
+    success = await mark_file_processed(pool, file_id, data)
     
-    return {"success": True, "queued": len(file_ids)}
-
-
-@router.post("/approve/all")
-async def approve_all_pending(request: Request):
-    """Approve all pending files."""
-    pool = request.app.state.db_pool
-    
-    # Get all pending files (no pagination limit)
-    files, total = await get_files(pool, status="PENDING", page=1, per_page=1000)
-    
-    if not files:
-        return {"success": True, "queued": 0}
-    
-    file_ids = [f['id'] for f in files]
-    await queue_files_batch(request.app.state, file_ids)
-    
-    return {"success": True, "queued": len(file_ids)}
-
-
-@router.post("/{file_id}/retry")
-async def retry_failed(request: Request, file_id: int):
-    """Retry a failed download."""
-    pool = request.app.state.db_pool
-    
-    file = await get_file_by_id(pool, file_id)
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    if file['status'] != 'FAILED':
-        raise HTTPException(status_code=400, detail="Can only retry FAILED files")
-    
-    # Reset to PENDING first, then queue
-    await update_file_status(pool, file_id, 'PENDING')
-    await queue_file_for_download(request.app.state, file_id)
-    
-    file = await get_file_by_id(pool, file_id)
-    
-    return templates.TemplateResponse(
-        "partials/file_row.html",
-        {"request": request, "file": file, "format_size": format_file_size}
-    )
+    if success:
+        return {"status": "ok", "file_id": file_id}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to update file")

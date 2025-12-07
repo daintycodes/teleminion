@@ -1,219 +1,204 @@
 """
-Dashboard routes for TeleMinion.
-Server-Side Rendering with Jinja2 + HTMX.
+TeleMinion V2 Dashboard Routes
+
+Server-side rendered dashboard with HTMX.
 """
 import logging
-from math import ceil
-from fastapi import APIRouter, Request, Query
-from fastapi.responses import HTMLResponse
+from typing import Optional
+
+from fastapi import APIRouter, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from ..database import get_files, get_channels, get_channel_stats
-from ..minio_client import check_minio_connection
+from ..auth import (
+    require_auth, 
+    login_user, 
+    destroy_session, 
+    get_session_token,
+    is_auth_enabled,
+    is_authenticated
+)
+from ..config import settings, CATEGORIES, MIME_CATEGORY_OPTIONS
+from ..database import (
+    get_dashboard_stats,
+    get_files_by_status,
+    get_active_files,
+    get_history_files,
+    get_active_channels
+)
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(tags=["dashboard"])
-
 templates = Jinja2Templates(directory="templates")
 
 
-def format_file_size(size: int) -> str:
-    """Format file size in human readable format."""
-    if size is None:
-        return "Unknown"
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Render login page."""
+    if not is_auth_enabled():
+        return RedirectResponse(url="/", status_code=303)
+    
+    if is_authenticated(request):
+        return RedirectResponse(url="/", status_code=303)
+    
+    return templates.TemplateResponse("login.html", {"request": request})
 
 
-# Add custom filters to Jinja2
-templates.env.filters['filesizeformat'] = format_file_size
+@router.post("/login")
+async def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...)
+):
+    """Process login form."""
+    token = await login_user(username, password)
+    
+    if token:
+        response = RedirectResponse(url="/", status_code=303)
+        response.set_cookie(
+            key="session_token",
+            value=token,
+            httponly=True,
+            max_age=settings.SESSION_EXPIRE_HOURS * 3600,
+            samesite="lax"
+        )
+        return response
+    
+    # Login failed
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "error": "Invalid username or password"
+    })
+
+
+@router.get("/logout")
+async def logout(request: Request):
+    """Logout and clear session."""
+    token = get_session_token(request)
+    if token:
+        destroy_session(token)
+    
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie("session_token")
+    return response
 
 
 @router.get("/", response_class=HTMLResponse)
+@require_auth
 async def dashboard(request: Request):
     """Main dashboard page."""
     pool = request.app.state.db_pool
     
-    # Get stats
-    stats = await get_channel_stats(pool)
-    channels = await get_channels(pool, active_only=True)
-    
-    # Check Telegram connection
-    telegram_connected = False
+    # Get authentication status
     auth_status = getattr(request.app.state, 'auth_status', {})
     
-    if hasattr(request.app.state, 'telegram_client'):
-        client = request.app.state.telegram_client
-        try:
-            telegram_connected = client.is_connected() and await client.is_user_authorized()
-        except:
-            pass
+    # Check Telegram connection
+    telegram_client = request.app.state.telegram_client
+    telegram_connected = False
+    try:
+        telegram_connected = await telegram_client.is_user_authorized()
+    except Exception:
+        pass
     
-    return templates.TemplateResponse(
-        "dashboard.html",
-        {
-            "request": request,
-            "stats": stats,
-            "channels": channels,
-            "telegram_connected": telegram_connected,
-            "auth_status": auth_status,
-            "format_size": format_file_size
-        }
-    )
-
-
-@router.get("/pending", response_class=HTMLResponse)
-async def pending_files(
-    request: Request,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=10, le=500)
-):
-    """Get pending files table partial."""
-    pool = request.app.state.db_pool
-    
-    files, total = await get_files(pool, status="PENDING", page=page, per_page=per_page)
-    total_pages = ceil(total / per_page) if total > 0 else 1
-    
-    return templates.TemplateResponse(
-        "partials/pending_table.html",
-        {
-            "request": request,
-            "files": files,
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": total_pages,
-            "has_next": page < total_pages,
-            "has_prev": page > 1,
-            "format_size": format_file_size
-        }
-    )
-
-
-@router.get("/active", response_class=HTMLResponse)
-async def active_files(
-    request: Request,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=10, le=500)
-):
-    """Get active (queued/downloading/uploading) files table partial."""
-    pool = request.app.state.db_pool
-    
-    files, total = await get_files(pool, status="ACTIVE", page=page, per_page=per_page)
-    total_pages = ceil(total / per_page) if total > 0 else 1
-    
-    return templates.TemplateResponse(
-        "partials/active_table.html",
-        {
-            "request": request,
-            "files": files,
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": total_pages,
-            "has_next": page < total_pages,
-            "has_prev": page > 1,
-            "format_size": format_file_size
-        }
-    )
-
-
-@router.get("/history", response_class=HTMLResponse)
-async def history_files(
-    request: Request,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=10, le=500)
-):
-    """Get completed/failed files table partial."""
-    pool = request.app.state.db_pool
-    
-    # Get completed files
-    completed, completed_total = await get_files(pool, status="COMPLETED", page=page, per_page=per_page)
-    # Get failed files
-    failed, failed_total = await get_files(pool, status="FAILED", page=1, per_page=100)
-    
-    total = completed_total + failed_total
-    total_pages = ceil(completed_total / per_page) if completed_total > 0 else 1
-    
-    return templates.TemplateResponse(
-        "partials/history_table.html",
-        {
-            "request": request,
-            "completed_files": completed,
-            "failed_files": failed,
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": total_pages,
-            "has_next": page < total_pages,
-            "has_prev": page > 1,
-            "format_size": format_file_size
-        }
-    )
-
-
-@router.get("/channels/list", response_class=HTMLResponse)
-async def channels_list(request: Request):
-    """Get channels table partial."""
-    pool = request.app.state.db_pool
-    channels = await get_channels(pool, active_only=False)
-    
-    return templates.TemplateResponse(
-        "partials/channels_table.html",
-        {
-            "request": request,
-            "channels": channels
-        }
-    )
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "auth_status": auth_status,
+        "telegram_connected": telegram_connected,
+        "categories": CATEGORIES,
+        "auth_enabled": is_auth_enabled()
+    })
 
 
 @router.get("/stats", response_class=HTMLResponse)
+@require_auth
 async def stats_partial(request: Request):
-    """Get stats cards partial for live updates."""
+    """Stats cards partial for HTMX polling."""
     pool = request.app.state.db_pool
-    stats = await get_channel_stats(pool)
+    stats = await get_dashboard_stats(pool)
     
-    return templates.TemplateResponse(
-        "partials/stats_cards.html",
-        {
-            "request": request,
-            "stats": stats
-        }
+    return templates.TemplateResponse("partials/stats_cards.html", {
+        "request": request,
+        "stats": stats
+    })
+
+
+@router.get("/pending", response_class=HTMLResponse)
+@require_auth
+async def pending_files(
+    request: Request,
+    page: int = 1,
+    per_page: int = 50,
+    sort: str = "created_at",
+    order: str = "desc"
+):
+    """Pending files table partial."""
+    pool = request.app.state.db_pool
+    
+    files, total = await get_files_by_status(
+        pool, "PENDING", page, per_page, sort, order
     )
+    
+    total_pages = (total + per_page - 1) // per_page
+    
+    return templates.TemplateResponse("partials/pending_table.html", {
+        "request": request,
+        "files": files,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "sort": sort,
+        "order": order,
+        "categories": CATEGORIES,
+        "mime_options": MIME_CATEGORY_OPTIONS
+    })
 
 
-@router.get("/health")
-async def health_check(request: Request):
-    """Health check endpoint."""
+@router.get("/active", response_class=HTMLResponse)
+@require_auth
+async def active_files(request: Request):
+    """Active downloads table partial."""
+    pool = request.app.state.db_pool
+    files = await get_active_files(pool)
+    
+    return templates.TemplateResponse("partials/active_table.html", {
+        "request": request,
+        "files": files
+    })
+
+
+@router.get("/history", response_class=HTMLResponse)
+@require_auth
+async def history_files(
+    request: Request,
+    page: int = 1,
+    per_page: int = 50
+):
+    """History table partial (completed + failed)."""
     pool = request.app.state.db_pool
     
-    # Check database
-    db_ok = False
-    try:
-        async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-            db_ok = True
-    except:
-        pass
+    failed, completed, total = await get_history_files(pool, page, per_page)
+    total_pages = (total + per_page - 1) // per_page
     
-    # Check Telegram
-    telegram_ok = False
-    if hasattr(request.app.state, 'telegram_client'):
-        try:
-            telegram_ok = request.app.state.telegram_client.is_connected()
-        except:
-            pass
+    return templates.TemplateResponse("partials/history_table.html", {
+        "request": request,
+        "failed_files": failed,
+        "completed_files": completed,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages
+    })
+
+
+@router.get("/channels-tab", response_class=HTMLResponse)
+@require_auth
+async def channels_tab(request: Request):
+    """Channels management table partial."""
+    pool = request.app.state.db_pool
+    channels = await get_active_channels(pool)
     
-    # Check MinIO
-    minio_ok = check_minio_connection()
-    
-    return {
-        "status": "healthy" if (db_ok and minio_ok) else "degraded",
-        "database_connected": db_ok,
-        "telegram_connected": telegram_ok,
-        "minio_connected": minio_ok
-    }
+    return templates.TemplateResponse("partials/channels_table.html", {
+        "request": request,
+        "channels": channels
+    })

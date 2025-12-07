@@ -1,219 +1,280 @@
 """
-Download worker for TeleMinion.
-Sequential download processor that handles the QUEUED -> DOWNLOADING -> UPLOADING -> COMPLETED pipeline.
+TeleMinion V2 Download Worker
+
+Background worker that processes the download queue.
+Features: Queue persistence, bucket routing, retry logic, n8n webhook.
 """
 import asyncio
+import hashlib
 import logging
-import traceback
-from pathlib import Path
-from typing import Optional
 import os
+from datetime import datetime
+from typing import Optional
 
+import aiofiles
+import httpx
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
-from .config import settings
-from .database import get_file_by_id, update_file_status
-from .minio_client import get_minio_client, upload_file, get_bucket_for_file_type
+from .config import settings, get_bucket_for_category, CATEGORIES
+from .database import (
+    get_file_by_id, 
+    update_file_status, 
+    increment_retry_count,
+    get_queued_file_ids,
+    reset_downloading_files,
+    check_content_hash_exists
+)
+from .models import FileStatus, WebhookPayload
 
 logger = logging.getLogger(__name__)
 
 
-def ensure_download_dir():
-    """Ensure download directory exists."""
-    settings.DOWNLOAD_PATH.mkdir(parents=True, exist_ok=True)
+async def calculate_content_hash(file_path: str) -> str:
+    """Calculate SHA-256 hash of file content."""
+    sha256 = hashlib.sha256()
+    async with aiofiles.open(file_path, 'rb') as f:
+        while chunk := await f.read(8192):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
 
-def sanitize_filename(filename: str) -> str:
-    """Sanitize filename for filesystem safety."""
-    # Remove or replace problematic characters
-    invalid_chars = '<>:"/\\|?*'
-    for char in invalid_chars:
-        filename = filename.replace(char, '_')
-    # Limit length
-    if len(filename) > 200:
-        name, ext = os.path.splitext(filename)
-        filename = name[:200-len(ext)] + ext
-    return filename
-
-
-async def download_file_from_telegram(
-    client: TelegramClient,
-    channel_id: int,
-    message_id: int,
-    file_name: str
-) -> Path:
-    """
-    Download a file from Telegram to local temp storage.
-    Returns the local file path.
-    """
-    ensure_download_dir()
-    
-    # Create unique local filename
-    safe_name = sanitize_filename(file_name)
-    local_path = settings.DOWNLOAD_PATH / f"{message_id}_{safe_name}"
-    
-    # Get the message
-    message = await client.get_messages(channel_id, ids=message_id)
-    
-    if not message or not message.document:
-        raise ValueError(f"Message {message_id} not found or has no document")
-    
-    # Download with progress callback (optional logging)
-    logger.info(f"Downloading: {file_name}")
-    
-    downloaded_path = await client.download_media(
-        message,
-        file=str(local_path)
-    )
-    
-    if not downloaded_path:
-        raise ValueError("Download returned None")
-    
-    return Path(downloaded_path)
-
-
-async def process_file(app_state, file_id: int):
-    """
-    Process a single file through the download pipeline.
-    
-    Pipeline:
-    1. QUEUED -> DOWNLOADING (fetch from Telegram)
-    2. DOWNLOADING -> UPLOADING (upload to MinIO)
-    3. UPLOADING -> COMPLETED (cleanup)
-    
-    On error: set status to FAILED with error message
-    """
-    pool = app_state.db_pool
-    client = app_state.telegram_client
-    minio = get_minio_client()
-    
-    local_path: Optional[Path] = None
+async def notify_webhook(payload: WebhookPayload) -> bool:
+    """Send webhook notification to n8n after successful upload."""
+    if not settings.PROCESSING_WEBHOOK_URL:
+        logger.debug("No webhook URL configured, skipping notification")
+        return True
     
     try:
-        # Get file info
-        file_info = await get_file_by_id(pool, file_id)
-        if not file_info:
-            logger.error(f"File {file_id} not found in database")
-            return
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                settings.PROCESSING_WEBHOOK_URL,
+                json=payload.model_dump(),
+                headers={"Content-Type": "application/json"}
+            )
+            if response.status_code == 200:
+                logger.info(f"Webhook notification sent for file {payload.file_id}")
+                return True
+            else:
+                logger.warning(f"Webhook returned status {response.status_code}")
+                return False
+    except Exception as e:
+        logger.error(f"Failed to send webhook notification: {e}")
+        return False
+
+
+async def download_and_upload_file(
+    telegram_client: TelegramClient,
+    minio_client,
+    pool,
+    file_id: int
+) -> bool:
+    """
+    Download a file from Telegram and upload to MinIO.
+    Returns True on success, False on failure.
+    """
+    file_data = await get_file_by_id(pool, file_id)
+    if not file_data:
+        logger.error(f"File {file_id} not found in database")
+        return False
+    
+    # Check if category is assigned
+    category = file_data.get('destination_category')
+    if not category or category not in CATEGORIES:
+        logger.error(f"File {file_id} has invalid category: {category}")
+        await update_file_status(
+            pool, file_id, FileStatus.FAILED,
+            error_message="No valid category assigned"
+        )
+        return False
+    
+    bucket = get_bucket_for_category(category)
+    channel_id = file_data['channel_id']
+    message_id = file_data['message_id']
+    file_name = file_data.get('file_name', f"file_{message_id}")
+    
+    # Create safe filename
+    safe_name = "".join(c if c.isalnum() or c in '.-_' else '_' for c in file_name)
+    local_path = os.path.join(settings.DOWNLOAD_PATH, f"{file_id}_{safe_name}")
+    
+    try:
+        # Update status to DOWNLOADING
+        await update_file_status(pool, file_id, FileStatus.DOWNLOADING)
+        logger.info(f"Downloading file {file_id}: {file_name}")
         
-        # Check if already processed
-        if file_info['status'] not in ('QUEUED', 'DOWNLOADING'):
-            logger.warning(f"File {file_id} status is {file_info['status']}, skipping")
-            return
-        
-        file_name = file_info['file_name'] or f"file_{file_id}"
-        channel_id = file_info['channel_id']
-        message_id = file_info['message_id']
-        file_type = file_info['file_type'] or 'pdf'
-        
-        # Step 1: Update to DOWNLOADING
-        await update_file_status(pool, file_id, 'DOWNLOADING')
-        logger.info(f"[{file_id}] Starting download: {file_name}")
-        
-        # Step 2: Download from Telegram
+        # Get the message from Telegram
         try:
-            local_path = await download_file_from_telegram(
-                client, channel_id, message_id, file_name
-            )
+            message = await telegram_client.get_messages(channel_id, ids=message_id)
+            if not message or not message.media:
+                raise ValueError("Message not found or has no media")
         except FloodWaitError as e:
-            logger.warning(f"FloodWait during download: sleeping {e.seconds}s")
+            logger.warning(f"FloodWait: sleeping {e.seconds}s")
             await asyncio.sleep(e.seconds)
-            # Retry once
-            local_path = await download_file_from_telegram(
-                client, channel_id, message_id, file_name
+            message = await telegram_client.get_messages(channel_id, ids=message_id)
+        
+        # Download to local temp
+        await telegram_client.download_media(message, local_path)
+        
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"Downloaded file not found: {local_path}")
+        
+        # Calculate content hash for deduplication
+        content_hash = await calculate_content_hash(local_path)
+        
+        # Check for duplicate
+        existing_id = await check_content_hash_exists(pool, content_hash)
+        if existing_id and existing_id != file_id:
+            logger.warning(f"File {file_id} is duplicate of {existing_id}")
+            os.remove(local_path)
+            await update_file_status(
+                pool, file_id, FileStatus.FAILED_PERMANENT,
+                error_message=f"Duplicate of file {existing_id}",
+                content_hash=content_hash
             )
+            return False
         
-        logger.info(f"[{file_id}] Downloaded to: {local_path}")
+        # Update status to UPLOADING
+        await update_file_status(
+            pool, file_id, FileStatus.UPLOADING,
+            content_hash=content_hash
+        )
+        logger.info(f"Uploading file {file_id} to bucket: {bucket}")
         
-        # Step 3: Update to UPLOADING
-        await update_file_status(pool, file_id, 'UPLOADING')
+        # Upload to MinIO
+        file_size = os.path.getsize(local_path)
+        minio_path = f"{channel_id}/{message_id}/{safe_name}"
         
-        # Step 4: Upload to MinIO
-        bucket = get_bucket_for_file_type(file_type)
-        object_name = f"{channel_id}/{sanitize_filename(file_name)}"
+        # Ensure bucket exists
+        if not minio_client.bucket_exists(bucket):
+            minio_client.make_bucket(bucket)
         
-        minio_path = upload_file(
-            minio,
-            local_path,
+        minio_client.fput_object(
             bucket,
-            object_name,
-            content_type=file_info.get('mime_type')
+            minio_path,
+            local_path,
+            content_type=file_data.get('mime_type', 'application/octet-stream')
         )
         
-        logger.info(f"[{file_id}] Uploaded to MinIO: {minio_path}")
+        # Clean up local file
+        os.remove(local_path)
         
-        # Step 5: Update to COMPLETED
-        await update_file_status(pool, file_id, 'COMPLETED', minio_path=minio_path)
-        logger.info(f"[{file_id}] Completed successfully")
+        # Update status to COMPLETED
+        full_path = f"{bucket}/{minio_path}"
+        await update_file_status(
+            pool, file_id, FileStatus.COMPLETED,
+            minio_path=full_path,
+            content_hash=content_hash
+        )
+        logger.info(f"File {file_id} uploaded successfully to {full_path}")
+        
+        # Send webhook notification to n8n
+        payload = WebhookPayload(
+            file_id=file_id,
+            file_name=file_name,
+            file_type=file_data.get('file_type'),
+            mime_type=file_data.get('mime_type'),
+            file_size=file_size,
+            minio_path=minio_path,
+            minio_bucket=bucket,
+            category=category,
+            channel_id=channel_id,
+            channel_name=file_data.get('channel_name'),
+            content_hash=content_hash
+        )
+        await notify_webhook(payload)
+        
+        return True
+        
+    except FloodWaitError as e:
+        logger.warning(f"FloodWait for file {file_id}: {e.seconds}s")
+        await update_file_status(
+            pool, file_id, FileStatus.QUEUED,
+            error_message=f"FloodWait: retry after {e.seconds}s"
+        )
+        await asyncio.sleep(e.seconds)
+        return False
         
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {str(e)}"
-        tb = traceback.format_exc()
-        logger.error(f"[{file_id}] Failed: {error_msg}\n{tb}")
+        logger.error(f"Failed to process file {file_id}: {e}")
         
-        await update_file_status(
-            pool, file_id, 'FAILED',
-            error_message=error_msg
-        )
-    
-    finally:
-        # Cleanup: delete local temp file
-        if local_path and local_path.exists():
-            try:
-                local_path.unlink()
-                logger.debug(f"Deleted temp file: {local_path}")
-            except Exception as e:
-                logger.warning(f"Failed to delete temp file {local_path}: {e}")
+        # Increment retry count
+        retry_count = await increment_retry_count(pool, file_id)
+        
+        # Check if max retries exceeded
+        if retry_count >= settings.MAX_RETRY_COUNT:
+            await update_file_status(
+                pool, file_id, FileStatus.FAILED_PERMANENT,
+                error_message=f"Max retries exceeded: {str(e)}"
+            )
+            logger.error(f"File {file_id} marked as FAILED_PERMANENT after {retry_count} retries")
+        else:
+            await update_file_status(
+                pool, file_id, FileStatus.FAILED,
+                error_message=str(e)
+            )
+        
+        # Clean up temp file if exists
+        if os.path.exists(local_path):
+            os.remove(local_path)
+        
+        return False
 
 
-async def download_worker(app_state):
+async def recover_queue(pool, download_queue: asyncio.Queue):
     """
-    Background worker that processes download queue sequentially.
+    Recover queued files from database on startup.
+    Called during app lifespan initialization.
+    """
+    # Reset stuck files
+    await reset_downloading_files(pool)
     
-    This prevents OOM crashes by processing one file at a time.
-    Files are added to app_state.download_queue when user clicks "Approve".
+    # Get queued file IDs
+    queued_ids = await get_queued_file_ids(pool)
+    
+    if queued_ids:
+        logger.info(f"Recovering {len(queued_ids)} queued files")
+        for file_id in queued_ids:
+            await download_queue.put(file_id)
+
+
+async def download_worker(
+    telegram_client: TelegramClient,
+    minio_client,
+    pool,
+    download_queue: asyncio.Queue
+):
+    """
+    Background worker that processes the download queue.
+    Runs continuously, processing one file at a time.
     """
     logger.info("Download worker started")
-    queue = app_state.download_queue
     
     while True:
         try:
-            # Wait for next file ID from queue
-            file_id = await queue.get()
-            logger.info(f"Worker picked up file {file_id}")
+            # Wait for a file ID from the queue
+            file_id = await download_queue.get()
+            logger.info(f"Processing file {file_id} from queue")
             
             try:
-                await process_file(app_state, file_id)
+                await download_and_upload_file(
+                    telegram_client,
+                    minio_client,
+                    pool,
+                    file_id
+                )
+            except Exception as e:
+                logger.error(f"Unexpected error processing file {file_id}: {e}")
             finally:
-                queue.task_done()
-                
-        except asyncio.CancelledError:
-            logger.info("Download worker stopped")
-            break
+                download_queue.task_done()
             
+            # Small delay between files
+            await asyncio.sleep(1)
+            
+        except asyncio.CancelledError:
+            logger.info("Download worker cancelled")
+            break
         except Exception as e:
-            logger.error(f"Worker error: {e}")
-            # Continue processing next item
-
-
-async def queue_file_for_download(app_state, file_id: int):
-    """
-    Add a file to the download queue.
-    Updates status to QUEUED and adds to async queue.
-    """
-    pool = app_state.db_pool
-    queue = app_state.download_queue
+            logger.error(f"Download worker error: {e}")
+            await asyncio.sleep(5)
     
-    # Update status to QUEUED
-    await update_file_status(pool, file_id, 'QUEUED')
-    
-    # Add to queue
-    await queue.put(file_id)
-    logger.info(f"File {file_id} queued for download")
-
-
-async def queue_files_batch(app_state, file_ids: list[int]):
-    """Queue multiple files for download."""
-    for file_id in file_ids:
-        await queue_file_for_download(app_state, file_id)
+    logger.info("Download worker stopped")

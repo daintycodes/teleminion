@@ -1,8 +1,8 @@
-version: "3.8"
+# TeleMinion V2 - Docker Compose Configuration
 
 services:
   # ==========================================================================
-  # TeleMinion Application
+  # TeleMinion V2 Application
   # ==========================================================================
   app:
     build:
@@ -12,22 +12,44 @@ services:
       # Database
       DATABASE_URL: postgresql://teleminio:teleminio@postgres:5432/teleminio
       
-      # Telegram API
+      # Telegram API (set in Coolify)
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
       TELEGRAM_PHONE: ${TELEGRAM_PHONE}
       TELEGRAM_SESSION_NAME: teleminio
       
-      # MinIO
+      # Primary MinIO
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       MINIO_SECURE: "false"
       
+      # Backup MinIO (optional - set in Coolify)
+      BACKUP_MINIO_ENDPOINT: ${BACKUP_MINIO_ENDPOINT:-}
+      BACKUP_MINIO_ACCESS_KEY: ${BACKUP_MINIO_ACCESS_KEY:-}
+      BACKUP_MINIO_SECRET_KEY: ${BACKUP_MINIO_SECRET_KEY:-}
+      BACKUP_MINIO_BUCKET: ${BACKUP_MINIO_BUCKET:-teleminio-backups}
+      BACKUP_MINIO_SECURE: ${BACKUP_MINIO_SECURE:-true}
+      
+      # Authentication (set in Coolify)
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:-change-me-to-random-string}
+      
+      # Self-Healing
+      SELF_HEALING_INTERVAL_SECONDS: ${SELF_HEALING_INTERVAL_SECONDS:-3600}
+      
+      # n8n Integration (set in Coolify)
+      PROCESSING_WEBHOOK_URL: ${PROCESSING_WEBHOOK_URL:-}
+      
+      # External Services Reference
+      WEAVIATE_URL: ${WEAVIATE_URL:-}
+      WHISPER_URL: ${WHISPER_URL:-}
+      
       # App settings
       DOWNLOAD_PATH: /tmp/downloads
-      SCAN_INTERVAL: "60"
-      LOG_LEVEL: INFO
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - downloads_temp:/tmp/downloads
     depends_on:
@@ -44,7 +66,7 @@ services:
       start_period: 60s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.teleminio-app.rule=Host(`tgdatapipeline.cashab.tech`)"
+      - "traefik.http.routers.teleminio-app.rule=Host(`${APP_DOMAIN:-tgdatapipeline.cashab.tech}`)"
       - "traefik.http.routers.teleminio-app.entrypoints=https"
       - "traefik.http.routers.teleminio-app.tls=true"
       - "traefik.http.routers.teleminio-app.tls.certresolver=letsencrypt"
@@ -69,7 +91,7 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
-  # MinIO Object Storage (Console)
+  # MinIO Object Storage
   # ==========================================================================
   minio:
     image: minio/minio:latest
@@ -87,20 +109,26 @@ services:
     restart: unless-stopped
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.teleminio-minio.rule=Host(`tgminio.cashab.tech`)"
+      - "traefik.http.routers.teleminio-minio.rule=Host(`${MINIO_DOMAIN:-tgminio.cashab.tech}`)"
       - "traefik.http.routers.teleminio-minio.entrypoints=https"
       - "traefik.http.routers.teleminio-minio.tls=true"
       - "traefik.http.routers.teleminio-minio.tls.certresolver=letsencrypt"
       - "traefik.http.services.teleminio-minio.loadbalancer.server.port=9001"
 
 # ==========================================================================
-# Volumes
+# Volumes (Named for persistence)
 # ==========================================================================
 volumes:
   postgres_data:
+    name: teleminio_postgres_data
   minio_data:
+    name: teleminio_minio_data
   downloads_temp:
+    name: teleminio_downloads_temp
 
+# ==========================================================================
+# Networks
+# ==========================================================================
 networks:
   default:
     external: true

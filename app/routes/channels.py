@@ -1,127 +1,167 @@
 """
-Channel management routes for TeleMinion.
+TeleMinion V2 Channel Routes
+
+Channel management endpoints.
 """
 import logging
-from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import HTMLResponse
-from telethon.errors import (
-    UsernameNotOccupiedError,
-    InviteHashInvalidError,
-    ChannelPrivateError
-)
+from typing import Optional
 
+from fastapi import APIRouter, Request, HTTPException, Form
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from telethon.errors import UsernameNotOccupiedError, ChannelPrivateError
+
+from ..auth import require_auth
 from ..database import (
-    get_channels, 
-    insert_channel, 
-    delete_channel,
-    get_channel_by_id
+    get_active_channels,
+    get_channel_by_id,
+    insert_channel,
+    deactivate_channel
 )
-from ..scanner import scan_channel_now
+from ..scanner import scan_channel
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/channels", tags=["channels"])
+templates = Jinja2Templates(directory="templates")
 
 
-@router.get("")
+@router.get("/", response_class=HTMLResponse)
+@require_auth
 async def list_channels(request: Request):
-    """Get all channels."""
+    """List all active channels."""
     pool = request.app.state.db_pool
-    channels = await get_channels(pool, active_only=False)
-    return {"channels": channels}
+    channels = await get_active_channels(pool)
+    
+    return templates.TemplateResponse("partials/channels_table.html", {
+        "request": request,
+        "channels": channels
+    })
 
 
-@router.post("")
-async def add_channel(request: Request):
+@router.post("/add", response_class=HTMLResponse)
+@require_auth
+async def add_channel(
+    request: Request,
+    channel_input: str = Form(...)
+):
     """
-    Add a new channel to track.
-    Accepts channel username, invite link, or ID.
+    Add a new channel by username, invite link, or ID.
     """
     pool = request.app.state.db_pool
-    client = request.app.state.telegram_client
+    telegram_client = request.app.state.telegram_client
     
-    form = await request.form()
-    identifier = form.get("identifier", "").strip()
-    
-    if not identifier:
-        raise HTTPException(status_code=400, detail="Channel identifier required")
+    # Check if Telegram is connected
+    if not await telegram_client.is_user_authorized():
+        return HTMLResponse("""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p>Telegram not connected. Please authenticate first.</p>
+            </div>
+        """)
     
     try:
-        # Try to get the entity (channel/chat)
-        entity = await client.get_entity(identifier)
+        # Clean input
+        channel_input = channel_input.strip()
         
-        # Extract channel info
+        # Handle different input formats
+        if channel_input.startswith("https://t.me/"):
+            # Invite link or username link
+            channel_input = channel_input.replace("https://t.me/", "")
+            if channel_input.startswith("+"):
+                # Private invite link
+                channel_input = channel_input
+        elif channel_input.startswith("@"):
+            channel_input = channel_input[1:]
+        
+        # Try to get entity
+        entity = await telegram_client.get_entity(channel_input)
+        
+        # Insert channel
         channel_data = {
-            'id': entity.id,
-            'name': getattr(entity, 'title', None) or getattr(entity, 'first_name', None),
-            'username': getattr(entity, 'username', None)
+            "id": entity.id,
+            "name": getattr(entity, 'title', None) or getattr(entity, 'first_name', 'Unknown'),
+            "username": getattr(entity, 'username', None)
         }
         
-        # Insert into database
         await insert_channel(pool, channel_data)
         
-        logger.info(f"Added channel: {channel_data['name']} ({channel_data['id']})")
+        logger.info(f"Added channel: {channel_data['name']} (ID: {entity.id})")
         
-        # Return the channel row partial for HTMX
-        return HTMLResponse(f"""
-            <tr id="channel-{channel_data['id']}">
-                <td class="px-4 py-3 text-gray-200">{channel_data['name'] or 'Unknown'}</td>
-                <td class="px-4 py-3 text-gray-400">@{channel_data['username'] or 'N/A'}</td>
-                <td class="px-4 py-3 text-gray-400">{channel_data['id']}</td>
-                <td class="px-4 py-3">
-                    <span class="px-2 py-1 rounded-full text-xs bg-green-500/20 text-green-400">Active</span>
-                </td>
-                <td class="px-4 py-3">
-                    <button hx-post="/channels/{channel_data['id']}/scan"
-                            hx-swap="none"
-                            class="text-blue-400 hover:text-blue-300 mr-3">
-                        Scan Now
-                    </button>
-                    <button hx-delete="/channels/{channel_data['id']}"
-                            hx-target="#channel-{channel_data['id']}"
-                            hx-swap="outerHTML"
-                            hx-confirm="Remove this channel?"
-                            class="text-red-400 hover:text-red-300">
-                        Remove
-                    </button>
-                </td>
-            </tr>
-        """)
+        # Refresh channel list
+        channels = await get_active_channels(pool)
+        return templates.TemplateResponse("partials/channels_table.html", {
+            "request": request,
+            "channels": channels,
+            "success_message": f"Added: {channel_data['name']}"
+        })
         
     except UsernameNotOccupiedError:
-        raise HTTPException(status_code=404, detail="Username not found")
-    except InviteHashInvalidError:
-        raise HTTPException(status_code=400, detail="Invalid invite link")
+        return HTMLResponse("""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p>Channel/username not found.</p>
+            </div>
+        """)
     except ChannelPrivateError:
-        raise HTTPException(status_code=403, detail="Channel is private")
+        return HTMLResponse("""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p>Channel is private. Join it first.</p>
+            </div>
+        """)
     except Exception as e:
-        logger.error(f"Error adding channel: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to add channel: {e}")
+        return HTMLResponse(f"""
+            <div class="p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400">
+                <p>Error: {str(e)}</p>
+            </div>
+        """)
 
 
-@router.delete("/{channel_id}")
-async def remove_channel(request: Request, channel_id: int):
-    """Remove a channel from tracking."""
+@router.post("/{channel_id}/scan", response_class=HTMLResponse)
+@require_auth
+async def scan_channel_now(request: Request, channel_id: int):
+    """Trigger an immediate scan of a channel."""
     pool = request.app.state.db_pool
+    telegram_client = request.app.state.telegram_client
     
-    await delete_channel(pool, channel_id)
-    logger.info(f"Removed channel: {channel_id}")
-    
-    # Return empty content for HTMX to remove the row
-    return HTMLResponse("")
-
-
-@router.post("/{channel_id}/scan")
-async def trigger_scan(request: Request, channel_id: int):
-    """Manually trigger a scan for a channel."""
-    pool = request.app.state.db_pool
-    client = request.app.state.telegram_client
+    channel = await get_channel_by_id(pool, channel_id)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
     
     try:
-        new_files = await scan_channel_now(client, pool, channel_id)
-        return {"success": True, "new_files": new_files}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        new_count, _ = await scan_channel(
+            telegram_client,
+            pool,
+            channel_id,
+            channel.get('last_scanned_message_id', 0)
+        )
+        
+        return HTMLResponse(f"""
+            <div class="p-3 bg-green-500/20 border border-green-500/50 rounded text-green-400 text-sm">
+                Found {new_count} new files
+            </div>
+        """)
+        
     except Exception as e:
-        logger.error(f"Error scanning channel: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Manual scan failed: {e}")
+        return HTMLResponse(f"""
+            <div class="p-3 bg-red-500/20 border border-red-500/50 rounded text-red-400 text-sm">
+                Scan failed: {str(e)}
+            </div>
+        """)
+
+
+@router.post("/{channel_id}/remove", response_class=HTMLResponse)
+@require_auth
+async def remove_channel(request: Request, channel_id: int):
+    """Remove (deactivate) a channel."""
+    pool = request.app.state.db_pool
+    
+    success = await deactivate_channel(pool, channel_id)
+    
+    if success:
+        channels = await get_active_channels(pool)
+        return templates.TemplateResponse("partials/channels_table.html", {
+            "request": request,
+            "channels": channels
+        })
+    else:
+        raise HTTPException(status_code=500, detail="Failed to remove channel")

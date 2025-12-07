@@ -1,187 +1,197 @@
 """
-TeleMinion - Main FastAPI Application
+TeleMinion V2 Main Application
 
-A self-hosted automation system for downloading Audio/PDFs from 
-Telegram channels to MinIO storage.
+FastAPI application with lifespan management for all services.
 """
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse
+from minio import Minio
 from telethon import TelegramClient
 
-from .config import settings
-from .database import (
-    create_db_pool, 
-    init_database, 
-    PostgresSession
-)
-from .minio_client import init_minio_buckets, get_minio_client
+from .config import settings, ALL_BUCKETS, CATEGORIES
+from .database import create_db_pool, init_database, PostgresSession
+from .worker import download_worker, recover_queue
 from .scanner import channel_scanner
-from .worker import download_worker
+from .healing import self_healing_task
+from .backup import backup_task
 from .routes import dashboard, channels, files, auth
 
 # Configure logging
 logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
+    level=getattr(logging, settings.LOG_LEVEL.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 
-async def create_telegram_client(pool) -> TelegramClient:
-    """Create and configure Telegram client with PostgresSession."""
-    session = PostgresSession(settings.TELEGRAM_SESSION_NAME, pool)
-    
-    # Load existing session if available
-    await session.load_session()
-    
-    client = TelegramClient(
-        session,
-        settings.TELEGRAM_API_ID,
-        settings.TELEGRAM_API_HASH,
-        connection_retries=5,
-        retry_delay=1,
-        auto_reconnect=True
+def create_minio_client() -> Minio:
+    """Create and return MinIO client."""
+    return Minio(
+        settings.MINIO_ENDPOINT,
+        access_key=settings.MINIO_ACCESS_KEY,
+        secret_key=settings.MINIO_SECRET_KEY,
+        secure=settings.MINIO_SECURE
     )
-    
-    return client
+
+
+def ensure_buckets_exist(minio_client: Minio):
+    """Ensure all required MinIO buckets exist."""
+    for bucket in ALL_BUCKETS:
+        try:
+            if not minio_client.bucket_exists(bucket):
+                minio_client.make_bucket(bucket)
+                logger.info(f"Created bucket: {bucket}")
+        except Exception as e:
+            logger.error(f"Failed to create bucket {bucket}: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    FastAPI lifespan context manager.
-    Handles startup and shutdown of all components.
+    Application lifespan manager.
+    
+    Startup:
+    - Initialize database pool
+    - Initialize MinIO client and buckets
+    - Create Telegram client with PostgresSession
+    - Recover download queue from database
+    - Start background tasks (scanner, worker, healing, backup)
+    
+    Shutdown:
+    - Cancel all background tasks
+    - Disconnect Telegram client
+    - Close database pool
     """
-    logger.info("Starting TeleMinion...")
+    logger.info("TeleMinion V2 starting up...")
     
-    # =========================================================================
-    # STARTUP
-    # =========================================================================
-    
-    # 1. Create database pool
-    logger.info("Connecting to PostgreSQL...")
+    # Initialize database
+    logger.info("Connecting to database...")
     app.state.db_pool = await create_db_pool()
-    
-    # 2. Initialize database schema
     await init_database(app.state.db_pool)
-    logger.info("Database initialized")
     
-    # 3. Initialize MinIO buckets
-    try:
-        logger.info("Initializing MinIO buckets...")
-        await init_minio_buckets()
-        logger.info("MinIO buckets ready")
-    except Exception as e:
-        logger.error(f"MinIO initialization failed: {e}")
-        # Continue anyway, MinIO might come up later
+    # Initialize MinIO
+    logger.info("Connecting to MinIO...")
+    app.state.minio_client = create_minio_client()
+    ensure_buckets_exist(app.state.minio_client)
     
-    # 4. Create Telegram client
-    logger.info("Creating Telegram client...")
-    app.state.telegram_client = await create_telegram_client(app.state.db_pool)
+    # Initialize Telegram client with PostgresSession
+    logger.info("Initializing Telegram client...")
+    session = PostgresSession(settings.TELEGRAM_SESSION_NAME, app.state.db_pool)
+    await session.load_session()
     
-    # 5. Connect Telegram client
-    try:
-        await app.state.telegram_client.connect()
-        
-        # Check if already authorized
-        if await app.state.telegram_client.is_user_authorized():
-            logger.info("Telegram client connected and authorized")
-            app.state.auth_status = {'authenticated': True}
-        else:
-            logger.info("Telegram client connected, awaiting authentication")
-            app.state.auth_status = {'authenticated': False, 'awaiting_code': False}
-            
-    except Exception as e:
-        logger.error(f"Telegram connection failed: {e}")
-        app.state.auth_status = {'authenticated': False, 'error': str(e)}
+    app.state.telegram_client = TelegramClient(
+        session,
+        settings.TELEGRAM_API_ID,
+        settings.TELEGRAM_API_HASH
+    )
+    await app.state.telegram_client.connect()
     
-    # 6. Create download queue
-    app.state.download_queue = asyncio.Queue(maxsize=100)
+    # Auth status
+    app.state.auth_status = {
+        'awaiting_code': False,
+        'awaiting_2fa': False,
+        'authenticated': await app.state.telegram_client.is_user_authorized()
+    }
     
-    # 7. Start background tasks (only if authenticated)
-    app.state.scanner_task = None
-    app.state.worker_task = None
+    # Initialize download queue
+    app.state.download_queue = asyncio.Queue(maxsize=1000)
     
+    # List to track background tasks
+    app.state.background_tasks = []
+    
+    # Function to start background tasks (called after Telegram auth)
     async def start_background_tasks():
-        """Start scanner and worker if authenticated."""
-        if await app.state.telegram_client.is_user_authorized():
-            if app.state.scanner_task is None:
-                app.state.scanner_task = asyncio.create_task(
-                    channel_scanner(app.state.telegram_client, app.state.db_pool)
-                )
-                logger.info("Channel scanner started")
-            
-            if app.state.worker_task is None:
-                app.state.worker_task = asyncio.create_task(
-                    download_worker(app.state)
-                )
-                logger.info("Download worker started")
+        if app.state.background_tasks:
+            # Already running
+            return
+        
+        logger.info("Starting background tasks...")
+        
+        # Recover queue from database
+        await recover_queue(app.state.db_pool, app.state.download_queue)
+        
+        # Start channel scanner
+        scanner_task = asyncio.create_task(
+            channel_scanner(app.state.telegram_client, app.state.db_pool)
+        )
+        app.state.background_tasks.append(scanner_task)
+        
+        # Start download worker
+        worker_task = asyncio.create_task(
+            download_worker(
+                app.state.telegram_client,
+                app.state.minio_client,
+                app.state.db_pool,
+                app.state.download_queue
+            )
+        )
+        app.state.background_tasks.append(worker_task)
+        
+        # Start self-healing task
+        healing_task = asyncio.create_task(
+            self_healing_task(app.state.db_pool, app.state.minio_client)
+        )
+        app.state.background_tasks.append(healing_task)
+        
+        # Start backup task
+        backup_task_coro = asyncio.create_task(backup_task())
+        app.state.background_tasks.append(backup_task_coro)
+        
+        logger.info(f"Started {len(app.state.background_tasks)} background tasks")
     
-    # Store the function for later use after auth
     app.state.start_background_tasks = start_background_tasks
     
-    # Start if already authenticated
-    await start_background_tasks()
+    # Start tasks if already authenticated
+    if app.state.auth_status['authenticated']:
+        await start_background_tasks()
+    else:
+        logger.info("Waiting for Telegram authentication before starting tasks")
     
-    logger.info("TeleMinion started successfully")
+    logger.info("TeleMinion V2 startup complete")
     
-    # =========================================================================
-    # YIELD - Application runs here
-    # =========================================================================
     yield
     
-    # =========================================================================
-    # SHUTDOWN
-    # =========================================================================
-    logger.info("Shutting down TeleMinion...")
+    # Shutdown
+    logger.info("TeleMinion V2 shutting down...")
     
     # Cancel background tasks
-    if app.state.scanner_task:
-        app.state.scanner_task.cancel()
+    for task in app.state.background_tasks:
+        task.cancel()
         try:
-            await app.state.scanner_task
+            await task
         except asyncio.CancelledError:
             pass
     
-    if app.state.worker_task:
-        app.state.worker_task.cancel()
-        try:
-            await app.state.worker_task
-        except asyncio.CancelledError:
-            pass
+    # Save Telegram session
+    if hasattr(app.state.telegram_client.session, 'save_session'):
+        await app.state.telegram_client.session.save_session()
     
     # Disconnect Telegram
-    if app.state.telegram_client:
-        # Save session before disconnect
-        if hasattr(app.state.telegram_client.session, 'save_session'):
-            await app.state.telegram_client.session.save_session()
-        await app.state.telegram_client.disconnect()
+    await app.state.telegram_client.disconnect()
     
     # Close database pool
-    if app.state.db_pool:
-        await app.state.db_pool.close()
+    await app.state.db_pool.close()
     
-    logger.info("TeleMinion shutdown complete")
+    logger.info("TeleMinion V2 shutdown complete")
 
 
-# Create FastAPI application
+# Create FastAPI app
 app = FastAPI(
-    title="TeleMinion",
-    description="Telegram to MinIO automation system",
-    version="1.0.0",
+    title="TeleMinion V2",
+    description="Production-hardened Telegram to MinIO downloader with RAG pipeline integration",
+    version="2.0.0",
     lifespan=lifespan
 )
 
 # Mount static files
-try:
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-except:
-    pass  # Static directory might not exist
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Include routers
 app.include_router(dashboard.router)
@@ -190,16 +200,54 @@ app.include_router(files.router)
 app.include_router(auth.router)
 
 
+@app.get("/health")
+async def health_check(request: Request):
+    """Health check endpoint for Docker/Coolify."""
+    try:
+        # Check database
+        db_ok = False
+        try:
+            await request.app.state.db_pool.fetchval("SELECT 1")
+            db_ok = True
+        except Exception:
+            pass
+        
+        # Check Telegram
+        tg_ok = False
+        try:
+            tg_ok = await request.app.state.telegram_client.is_user_authorized()
+        except Exception:
+            pass
+        
+        # Check MinIO
+        minio_ok = False
+        try:
+            request.app.state.minio_client.list_buckets()
+            minio_ok = True
+        except Exception:
+            pass
+        
+        status = "healthy" if (db_ok and minio_ok) else "degraded"
+        
+        return {
+            "status": status,
+            "database": db_ok,
+            "telegram": tg_ok,
+            "minio": minio_ok,
+            "queue_size": request.app.state.download_queue.qsize()
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"status": "unhealthy", "error": str(e)}
+        )
+
+
 @app.get("/api/queue-status")
-async def queue_status():
-    """Get current queue status."""
-    queue = app.state.download_queue
+async def queue_status(request: Request):
+    """Get download queue status."""
     return {
-        "queue_size": queue.qsize(),
-        "queue_full": queue.full()
+        "queue_size": request.app.state.download_queue.qsize(),
+        "max_size": request.app.state.download_queue.maxsize,
+        "tasks_running": len(request.app.state.background_tasks)
     }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

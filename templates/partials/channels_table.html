@@ -1,52 +1,83 @@
-<!-- Channels Table -->
-<table class="w-full">
-    <thead class="bg-dark-700 text-gray-400 text-sm">
-        <tr>
-            <th class="px-4 py-3 text-left">Name</th>
-            <th class="px-4 py-3 text-left">Username</th>
-            <th class="px-4 py-3 text-left">ID</th>
-            <th class="px-4 py-3 text-left">Status</th>
-            <th class="px-4 py-3 text-left">Actions</th>
-        </tr>
-    </thead>
-    <tbody id="channels-tbody" class="divide-y divide-gray-800">
-        {% for channel in channels %}
-        <tr id="channel-{{ channel.id }}">
-            <td class="px-4 py-3 text-gray-200">{{ channel.name or 'Unknown' }}</td>
-            <td class="px-4 py-3 text-gray-400">@{{ channel.username or 'N/A' }}</td>
-            <td class="px-4 py-3 text-gray-400 font-mono text-sm">{{ channel.id }}</td>
-            <td class="px-4 py-3">
-                {% if channel.is_active %}
-                <span class="px-2 py-1 rounded-full text-xs bg-green-500/20 text-green-400">Active</span>
-                {% else %}
-                <span class="px-2 py-1 rounded-full text-xs bg-gray-500/20 text-gray-400">Inactive</span>
-                {% endif %}
-            </td>
-            <td class="px-4 py-3">
-                <button hx-post="/channels/{{ channel.id }}/scan" hx-swap="none"
-                    class="text-blue-400 hover:text-blue-300 mr-3 text-sm">
-                    Scan Now
-                </button>
-                <button hx-delete="/channels/{{ channel.id }}" hx-target="#channel-{{ channel.id }}" hx-swap="outerHTML"
-                    hx-confirm="Remove this channel?" class="text-red-400 hover:text-red-300 text-sm">
-                    Remove
-                </button>
-            </td>
-        </tr>
-        {% else %}
-        <tr>
-            <td colspan="5" class="px-4 py-12 text-center">
-                <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-800 flex items-center justify-center">
-                    <svg class="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0">
-                        </path>
-                    </svg>
-                </div>
-                <p class="text-gray-500">No channels added</p>
-                <p class="text-sm text-gray-600 mt-1">Add a channel using the form above</p>
-            </td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+<!-- Channels Table Partial -->
+
+{% if success_message %}
+<div class="mb-4 p-3 bg-green-500/20 border border-green-500/50 rounded-lg text-green-400 text-sm">
+    {{ success_message }}
+</div>
+{% endif %}
+
+{% if channels %}
+<div class="overflow-x-auto">
+    <table class="w-full">
+        <thead>
+            <tr class="text-left text-sm text-gray-400 border-b border-gray-800">
+                <th class="pb-3">Channel</th>
+                <th class="pb-3">Username</th>
+                <th class="pb-3">Last Scanned</th>
+                <th class="pb-3 text-right">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="text-sm">
+            {% for channel in channels %}
+            <tr class="border-b border-gray-800/50 hover:bg-gray-800/30">
+                <!-- Name -->
+                <td class="py-3">
+                    <div class="flex items-center gap-3">
+                        <div
+                            class="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400">
+                            📡
+                        </div>
+                        <span class="text-white font-medium">{{ channel.name or 'Unknown' }}</span>
+                    </div>
+                </td>
+
+                <!-- Username -->
+                <td class="py-3 text-gray-400">
+                    {% if channel.username %}
+                    <a href="https://t.me/{{ channel.username }}" target="_blank"
+                        class="hover:text-indigo-400 transition-colors">
+                        @{{ channel.username }}
+                    </a>
+                    {% else %}
+                    <span class="text-gray-500">Private</span>
+                    {% endif %}
+                </td>
+
+                <!-- Last Scanned -->
+                <td class="py-3 text-gray-400 text-xs">
+                    {% if channel.last_scanned_message_id > 0 %}
+                    ID: {{ channel.last_scanned_message_id }}
+                    {% else %}
+                    Never
+                    {% endif %}
+                </td>
+
+                <!-- Actions -->
+                <td class="py-3 text-right">
+                    <div class="flex items-center justify-end gap-2">
+                        <!-- Scan Now -->
+                        <button hx-post="/channels/{{ channel.id }}/scan" hx-swap="beforeend" hx-target="closest tr"
+                            class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs">
+                            Scan Now
+                        </button>
+
+                        <!-- Remove -->
+                        <button hx-post="/channels/{{ channel.id }}/remove" hx-target="#channels-list"
+                            hx-swap="innerHTML" hx-confirm="Remove this channel?"
+                            class="px-3 py-1 rounded bg-red-600/20 hover:bg-red-600/40 text-red-400 text-xs">
+                            Remove
+                        </button>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="text-center py-12">
+    <div class="text-4xl mb-3">📡</div>
+    <p class="text-gray-400">No channels added</p>
+    <p class="text-sm text-gray-500 mt-1">Add a Telegram channel to start scanning for files</p>
+</div>
+{% endif %}
