@@ -221,12 +221,20 @@ async def health_check(request: Request):
         except Exception:
             pass
         
-        # Check Telegram
+        # Check Telegram (verify session with server)
         tg_ok = False
         try:
-            tg_ok = await request.app.state.telegram_client.is_user_authorized()
+            if request.app.state.telegram_client.is_connected():
+                # Actually ping the server to check if session is valid
+                # is_user_authorized only checks local key presence
+                me = await request.app.state.telegram_client.get_me()
+                tg_ok = me is not None
+            else:
+                # Try to reconnect if disconnected
+                await request.app.state.telegram_client.connect()
+                tg_ok = await request.app.state.telegram_client.is_user_authorized()
         except Exception:
-            pass
+            tg_ok = False
         
         # Check MinIO
         minio_ok = False

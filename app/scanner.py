@@ -187,6 +187,16 @@ async def channel_scanner(
     
     while True:
         try:
+            # Circuit Breaker: Check connection
+            if not client.is_connected():
+                logger.warning("Scanner paused: Telegram client disconnected. Waiting...")
+                await asyncio.sleep(settings.SCAN_INTERVAL)
+                try:
+                    await client.connect()
+                except:
+                    pass
+                continue
+
             # Check if client is authorized
             if not await client.is_user_authorized():
                 logger.warning("Telegram client not authorized, skipping scan")

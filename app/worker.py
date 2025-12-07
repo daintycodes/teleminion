@@ -278,6 +278,16 @@ async def download_worker(
     
     while True:
         try:
+            # Circuit Breaker: Check connection before processing
+            if not telegram_client.is_connected():
+                logger.warning("Worker paused: Telegram client disconnected. Waiting 5s...")
+                await asyncio.sleep(5)
+                try:
+                    await telegram_client.connect()
+                except Exception as e:
+                    logger.error(f"Worker failed to reconnect: {e}")
+                continue
+
             # Wait for a file ID from the queue
             file_id = await download_queue.get()
             logger.info(f"Processing file {file_id} from queue")
@@ -289,6 +299,10 @@ async def download_worker(
                     pool,
                     file_id
                 )
+            except ConnectionError:
+                logger.error(f"Connection lost while processing file {file_id}. Re-queueing.")
+                await download_queue.put(file_id) # Put back in queue
+                await asyncio.sleep(5)
             except Exception as e:
                 logger.error(f"Unexpected error processing file {file_id}: {e}")
             finally:
