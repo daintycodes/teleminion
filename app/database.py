@@ -162,6 +162,9 @@ async def init_database(pool: asyncpg.Pool):
             ("files", "transcript_available", "BOOLEAN DEFAULT false"),
             ("files", "chunk_count", "INTEGER DEFAULT 0"),
             ("files", "processed_at", "TIMESTAMP"),
+            # Channels table migrations
+            ("channels", "created_at", "TIMESTAMP DEFAULT NOW()"),
+            ("channels", "updated_at", "TIMESTAMP DEFAULT NOW()"),
         ]
         
         for table, column, col_type in migrations:

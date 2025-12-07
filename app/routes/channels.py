@@ -25,7 +25,7 @@ router = APIRouter(prefix="/channels", tags=["channels"])
 templates = Jinja2Templates(directory="templates")
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("", response_class=HTMLResponse)
 @require_auth
 async def list_channels(request: Request):
     """List all active channels."""
