@@ -92,6 +92,9 @@ async def dashboard(request: Request):
     # Get authentication status
     auth_status = getattr(request.app.state, 'auth_status', {})
     
+    # Get initial stats
+    stats = await get_dashboard_stats(pool)
+    
     # Check Telegram connection
     telegram_client = request.app.state.telegram_client
     telegram_connected = False
@@ -105,7 +108,8 @@ async def dashboard(request: Request):
         "auth_status": auth_status,
         "telegram_connected": telegram_connected,
         "categories": CATEGORIES,
-        "auth_enabled": is_auth_enabled()
+        "auth_enabled": is_auth_enabled(),
+        "stats": stats
     })
 
 
