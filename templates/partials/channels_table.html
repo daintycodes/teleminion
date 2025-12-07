@@ -55,10 +55,18 @@
                 <!-- Actions -->
                 <td class="py-3 text-right">
                     <div class="flex items-center justify-end gap-2">
-                        <!-- Scan Now -->
+                        <!-- Scan Now (recent 500) -->
                         <button hx-post="/channels/{{ channel.id }}/scan" hx-swap="beforeend" hx-target="closest tr"
                             class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs">
-                            Scan Now
+                            Scan
+                        </button>
+
+                        <!-- Full Scan (all messages) -->
+                        <button hx-post="/channels/{{ channel.id }}/full-scan" hx-swap="beforeend"
+                            hx-target="closest tr"
+                            hx-confirm="Full scan will fetch ALL messages. This may take a while for large channels. Continue?"
+                            class="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs">
+                            Full Scan
                         </button>
 
                         <!-- Remove -->

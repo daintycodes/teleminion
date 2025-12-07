@@ -16,7 +16,8 @@ from ..database import (
     get_active_channels,
     get_channel_by_id,
     insert_channel,
-    deactivate_channel
+    deactivate_channel,
+    update_channel_last_scanned
 )
 from ..scanner import scan_channel
 
@@ -118,7 +119,7 @@ async def add_channel(
 @router.post("/{channel_id}/scan", response_class=HTMLResponse)
 @require_auth
 async def scan_channel_now(request: Request, channel_id: int):
-    """Trigger an immediate scan of a channel."""
+    """Trigger an immediate scan of a channel (recent 500 messages)."""
     pool = request.app.state.db_pool
     telegram_client = request.app.state.telegram_client
     
@@ -127,16 +128,21 @@ async def scan_channel_now(request: Request, channel_id: int):
         raise HTTPException(status_code=404, detail="Channel not found")
     
     try:
-        new_count, _ = await scan_channel(
+        new_count, max_id = await scan_channel(
             telegram_client,
             pool,
             channel_id,
-            channel.get('last_scanned_message_id', 0)
+            channel.get('last_scanned_message_id', 0),
+            full_scan=False
         )
+        
+        # Update last scanned message ID
+        if max_id > channel.get('last_scanned_message_id', 0):
+            await update_channel_last_scanned(pool, channel_id, max_id)
         
         return HTMLResponse(f"""
             <div class="p-3 bg-green-500/20 border border-green-500/50 rounded text-green-400 text-sm">
-                Found {new_count} new files
+                Found {new_count} new audio/PDF files
             </div>
         """)
         
@@ -145,6 +151,50 @@ async def scan_channel_now(request: Request, channel_id: int):
         return HTMLResponse(f"""
             <div class="p-3 bg-red-500/20 border border-red-500/50 rounded text-red-400 text-sm">
                 Scan failed: {str(e)}
+            </div>
+        """)
+
+
+@router.post("/{channel_id}/full-scan", response_class=HTMLResponse)
+@require_auth
+async def full_scan_channel(request: Request, channel_id: int):
+    """
+    Trigger a FULL scan of a channel (ALL messages).
+    Use this for initial import of a new channel.
+    Warning: This can take a long time for large channels.
+    """
+    pool = request.app.state.db_pool
+    telegram_client = request.app.state.telegram_client
+    
+    channel = await get_channel_by_id(pool, channel_id)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    
+    try:
+        logger.info(f"Starting FULL scan of channel {channel_id}")
+        
+        new_count, max_id = await scan_channel(
+            telegram_client,
+            pool,
+            channel_id,
+            0,  # Start from beginning
+            full_scan=True
+        )
+        
+        # Update last scanned message ID
+        await update_channel_last_scanned(pool, channel_id, max_id)
+        
+        return HTMLResponse(f"""
+            <div class="p-3 bg-green-500/20 border border-green-500/50 rounded text-green-400 text-sm">
+                Full scan complete: {new_count} audio/PDF files found
+            </div>
+        """)
+        
+    except Exception as e:
+        logger.error(f"Full scan failed: {e}")
+        return HTMLResponse(f"""
+            <div class="p-3 bg-red-500/20 border border-red-500/50 rounded text-red-400 text-sm">
+                Full scan failed: {str(e)}
             </div>
         """)
 

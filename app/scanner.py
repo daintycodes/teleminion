@@ -87,24 +87,34 @@ async def scan_channel(
     client: TelegramClient,
     pool,
     channel_id: int,
-    last_message_id: int = 0
+    last_message_id: int = 0,
+    full_scan: bool = False
 ) -> tuple[int, int]:
     """
     Scan a channel for new audio/PDF files.
     Returns (new_files_count, last_message_id).
+    
+    If full_scan=True, scans ALL messages (for initial import).
+    Otherwise, only scans messages newer than last_message_id.
     """
     new_files = 0
     max_message_id = last_message_id
+    
+    # For full scan, don't use min_id filter and increase limit
+    scan_limit = None if full_scan else 500  # None = no limit
+    min_id = 0 if full_scan else last_message_id
     
     try:
         # Get channel entity
         entity = await client.get_entity(channel_id)
         
+        logger.info(f"Scanning channel {channel_id} (full_scan={full_scan}, min_id={min_id})")
+        
         # Iterate through messages (newest first)
         async for message in client.iter_messages(
             entity,
-            limit=100,
-            min_id=last_message_id
+            limit=scan_limit,
+            min_id=min_id
         ):
             max_message_id = max(max_message_id, message.id)
             
@@ -123,10 +133,10 @@ async def scan_channel(
             file_id = await insert_file(pool, file_data)
             if file_id:
                 new_files += 1
-                logger.info(
-                    f"Discovered {file_info['file_type']}: {file_info['file_name']} "
-                    f"(category: {file_info['destination_category']})"
-                )
+                if new_files % 100 == 0:
+                    logger.info(f"Progress: {new_files} files discovered...")
+        
+        logger.info(f"Scan complete: {new_files} audio/PDF files found")
         
     except FloodWaitError as e:
         logger.warning(f"FloodWait scanning channel {channel_id}: {e.seconds}s")
