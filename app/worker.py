@@ -102,15 +102,30 @@ async def download_and_upload_file(
         await update_file_status(pool, file_id, FileStatus.DOWNLOADING)
         logger.info(f"Downloading file {file_id}: {file_name}")
         
-        # Get the message from Telegram
+        # Get the channel entity first (required for entity resolution after restart)
         try:
-            message = await telegram_client.get_messages(channel_id, ids=message_id)
+            # Try to get entity - for channels, we need to use the proper ID format
+            # Channels have negative IDs in some APIs, but Telethon stores positive peer IDs
+            entity = await telegram_client.get_entity(channel_id)
+        except Exception as entity_error:
+            logger.warning(f"Failed to get entity directly, trying as channel: {entity_error}")
+            # Try with explicit PeerChannel
+            from telethon.tl.types import PeerChannel
+            try:
+                entity = await telegram_client.get_entity(PeerChannel(channel_id))
+            except Exception as peer_error:
+                logger.error(f"Failed to resolve channel {channel_id}: {peer_error}")
+                raise ValueError(f"Cannot resolve channel entity: {channel_id}")
+        
+        # Get the message from Telegram using the resolved entity
+        try:
+            message = await telegram_client.get_messages(entity, ids=message_id)
             if not message or not message.media:
                 raise ValueError("Message not found or has no media")
         except FloodWaitError as e:
             logger.warning(f"FloodWait: sleeping {e.seconds}s")
             await asyncio.sleep(e.seconds)
-            message = await telegram_client.get_messages(channel_id, ids=message_id)
+            message = await telegram_client.get_messages(entity, ids=message_id)
         
         # Download to local temp
         await telegram_client.download_media(message, local_path)
