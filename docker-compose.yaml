@@ -64,14 +64,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.teleminio-app.rule=Host(`${APP_DOMAIN:-tgdatapipeline.cashab.tech}`)"
-      - "traefik.http.routers.teleminio-app.entrypoints=https"
-      - "traefik.http.routers.teleminio-app.tls=true"
-      - "traefik.http.routers.teleminio-app.tls.certresolver=letsencrypt"
-      - "traefik.http.services.teleminio-app.loadbalancer.server.port=8000"
-
   # ==========================================================================
   # PostgreSQL Database
   # ==========================================================================
@@ -107,14 +99,6 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.teleminio-minio.rule=Host(`${MINIO_DOMAIN:-tgminio.cashab.tech}`)"
-      - "traefik.http.routers.teleminio-minio.entrypoints=https"
-      - "traefik.http.routers.teleminio-minio.tls=true"
-      - "traefik.http.routers.teleminio-minio.tls.certresolver=letsencrypt"
-      - "traefik.http.services.teleminio-minio.loadbalancer.server.port=9001"
-
 # ==========================================================================
 # Volumes (Named for persistence)
 # ==========================================================================
