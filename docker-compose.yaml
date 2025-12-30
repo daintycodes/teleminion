@@ -99,12 +99,6 @@ services:
       - "traefik.http.routers.teleminio-minio-console.rule=Host(`prod-minio.cashab.tech`)"
       - "traefik.http.services.teleminio-minio-console.loadbalancer.server.port=9001"
       # Optional: MinIO API on port 9000 (if you need n8n to connect via public URL)
-      - "traefik.http.routers.teleminio-minio-api.rule=Host(`s3.cashab.tech`)"
-      - "traefik.http.routers.teleminio-minio-api.entrypoints=https"
-      - "traefik.http.routers.teleminio-minio-api.tls=true"
-      - "traefik.http.routers.teleminio-minio-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.teleminio-minio-api.loadbalancer.server.port=9000"
-
 # ==========================================================================
 # Volumes
 # ==========================================================================
