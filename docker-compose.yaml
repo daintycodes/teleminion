@@ -77,9 +77,10 @@ services:
   # ==========================================================================
   minio:
     image: minio/minio:latest
+    container_name: minio
     environment:
       MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_PASSWORD: 3BcYUpjrXCUcAkzpPypTLDwx78YdtDPM
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
@@ -105,5 +106,6 @@ volumes:
 # Networks
 # ==========================================================================
 networks:
-  coolify:
+  n8n-net 
+  coolify
     external: true
