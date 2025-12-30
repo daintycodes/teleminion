@@ -120,6 +120,5 @@ volumes:
 # Networks
 # ==========================================================================
 networks:
-  default:
+  coolify:
     external: true
-    name: coolify
