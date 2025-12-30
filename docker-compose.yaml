@@ -19,7 +19,7 @@ services:
       # Primary MinIO
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECRET_KEY: 3BcYUpjrXCUcAkzpPypTLDwx78YdtDPM
       MINIO_SECURE: "false"
       # Backup MinIO
       BACKUP_MINIO_ENDPOINT: ${BACKUP_MINIO_ENDPOINT:-}
@@ -77,7 +77,7 @@ services:
   # ==========================================================================
   minio:
     image: minio/minio:latest
-      container_name: minio
+    container_name: minio
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: 3BcYUpjrXCUcAkzpPypTLDwx78YdtDPM
@@ -106,6 +106,7 @@ volumes:
 # Networks
 # ==========================================================================
 networks:
-  n8n-net 
-  coolify
+  n8n-net:
+    driver: bridge
+  coolify:
     external: true
