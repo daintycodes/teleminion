@@ -55,7 +55,7 @@ services:
       start_period: 60s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.teleminio-app.rule=Host(`${APP_DOMAIN:-prod-datapipeline.cashab.tech}`)"
+      - "traefik.http.routers.teleminio-app.rule=Host(`${APP_DOMAIN:-https://prod-datapipeline.cashab.tech:8000}`)"
       - "traefik.http.routers.teleminio-app.entrypoints=https"
       - "traefik.http.routers.teleminio-app.tls=true"
       - "traefik.http.routers.teleminio-app.tls.certresolver=letsencrypt"
@@ -99,7 +99,7 @@ services:
     labels:
       - "traefik.enable=true"
       # MinIO Console (Web GUI) on port 9001
-      - "traefik.http.routers.teleminio-minio-console.rule=Host(`${MINIO_DOMAIN:-prod-minio.cashab.tech}`)"
+      - "traefik.http.routers.teleminio-minio-console.rule=Host(`${MINIO_DOMAIN:-https://prod-minio.cashab.tech:9001}`)"
       - "traefik.http.routers.teleminio-minio-console.entrypoints=https"
       - "traefik.http.routers.teleminio-minio-console.tls=true"
       - "traefik.http.routers.teleminio-minio-console.tls.certresolver=letsencrypt"
