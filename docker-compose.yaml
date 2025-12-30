@@ -55,7 +55,7 @@ services:
       start_period: 60s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.teleminio-app.rule=Host(`${APP_DOMAIN:-prod-datapipeline.cashab.tech:8000}`)"
+      - "traefik.http.routers.teleminio-app.rule=Host(`prod-datapipeline.cashab.tech`)"
       - "traefik.http.services.teleminio-app.loadbalancer.server.port=8000"
 
   # ==========================================================================
@@ -96,7 +96,7 @@ services:
     labels:
       - "traefik.enable=true"
       # MinIO Console (Web GUI) on port 9001
-      - "traefik.http.routers.teleminio-minio-console.rule=Host(`${MINIO_DOMAIN:-prod-minio.cashab.tech:9001}`)"
+      - "traefik.http.routers.teleminio-minio-console.rule=Host(`prod-minio.cashab.tech`)"
       - "traefik.http.services.teleminio-minio-console.loadbalancer.server.port=9001"
       # Optional: MinIO API on port 9000 (if you need n8n to connect via public URL)
       - "traefik.http.routers.teleminio-minio-api.rule=Host(`s3.cashab.tech`)"
