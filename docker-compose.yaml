@@ -82,6 +82,8 @@ services:
   minio:
     image: minio/minio:latest
     environment:
+      container_name: minio
+      hostname: minio
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
