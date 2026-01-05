@@ -53,6 +53,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    networks:
+      - coolify
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.teleminio-app.rule=Host(`prod-datapipeline.cashab.tech`)"
@@ -75,6 +77,8 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - coolify
 
   # ==========================================================================
   # MinIO Object Storage
@@ -95,6 +99,8 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - coolify
     labels:
       - "traefik.enable=true"
       # MinIO Console (Web GUI) on port 9001
